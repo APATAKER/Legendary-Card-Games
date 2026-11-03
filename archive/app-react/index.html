@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Legendary Encounters: Predator — Tactical Card Game</title>
+    <meta name="description" content="Cooperative tactical deck building card game based on Legendary Encounters: A Predator Deck Building Game." />
+    <!-- Google Fonts for Tactical Military HUD -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['"Chakra Petch"', 'system-ui', 'sans-serif'],
+              mono: ['"Share Tech Mono"', 'ui-monospace', 'monospace'],
+            },
+            colors: {
+              predator: {
+                dark: '#050a07',
+                panel: '#09130d',
+                border: '#153222',
+                green: '#00ff88',
+                red: '#ff3344',
+                amber: '#ffaa00',
+              }
+            }
+          }
+        }
+      }
+    </script>
+  </head>
+  <body class="bg-[#040805] text-neutral-100 min-h-screen selection:bg-emerald-500 selection:text-black">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "legendary-encounters",
+  "version-string": "0.1.0",
+  "description": "Legendary Encounters: Predator - native Windows tabletop (C++20 / OpenGL 4.6 / SDL3)",
+  "dependencies": [
+    "sdl3",
+    "glad",
+    "stb",
+    "nlohmann-json",
+    {
+      "name": "imgui",
+      "features": [
+        "sdl3-binding",
+        "opengl3-binding"
+      ]
+    }
+  ],
+  "builtin-baseline": "469a0504e4a6ebf6173d1c0f51a7fa34c382fd43"
+}
