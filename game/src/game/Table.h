@@ -85,8 +85,31 @@ struct PlayerState {
     int manualMarksOffset = 0;
     int nextHandSizePenalty = 0;
     int cannotDieTurnsRemaining = 0;
+    std::uint32_t activeImmunityCardUid = 0; // Dutch 1 Rare (If It Bleeds, We Can Kill It) stationed beside Avatar
     bool alive = true;
+    bool escapedInChoppa = false;            // Safe & out of the game beneath The Choppa! (id 114)
     bool coordinatedThisTurn = false;
+    bool allHandCoordinateThisTurn = false;  // Granted by Dillon 1 Rare (I Can Get Even, id 7)
+};
+
+/// Entry for Like A Hunter (id 109) top-3 deck reveal modal.
+struct RevealedDeckCardEntry {
+    int playerIdx = 0;
+    CardInst card{};
+    int cost = 0;
+    bool discarded = false;
+};
+
+/// Presentation-only flying card animation when a card moves between piles/zones.
+struct FlyingCardAnim {
+    CardInst card{};
+    Vec2 startPos{0.f, 0.f};
+    Vec2 endPos{0.f, 0.f};
+    float delay = 0.f;
+    float elapsed = 0.f;
+    float duration = 0.32f;
+    bool startFaceUp = false;
+    bool endFaceUp = true;
 };
 
 /// Everything that is saved, undone, and synchronised between players.
@@ -122,11 +145,77 @@ struct TableState {
     int cannotDieTurnsRemaining = 0;
     int coordinatedCountThisTurn = 0;
     bool defensivePositionAttachedToHills = false;
+    bool threeHundredCityBlocksAttachedToFinalEnemy = false;
+
+    // --- Interactive Choice Modals ---
+    bool pendingSacrificeChoice = false;
+    int pendingSacrificeSourcePlayer = 0;
+    CardInst pendingSacrificeCard{};
+
+    // Cover Me! (id 191, 4 dmg): teammates may discard Attack cards totaling >= 4
+    bool pendingCoverMeChoice = false;
+    int pendingCoverMeTargetPlayer = 0;
+    CardInst pendingCoverMeCard{};
+    std::vector<std::uint32_t> coverMeSelectedUids;
+
+    // Pushing Pencils (id 5): Sneak Peek a hidden card in The Wilds, optionally free-scan it
+    bool pendingSneakPeek = false;
+    int sneakPeekSlot = -1; // -1 = picking hidden Wilds slot (0..4); 0..4 = viewing card privately
+    bool pendingSneakPeekChoice = false;
+    bool sneakPeekRevealedCardSelected = false;
+    int sneakPeekWildsSlot = -1;
+
+    // Choose Card to Kill Modal (Stick Around id 8, Running the Streets id 69, Nothing On Earth id 117, A Fitting Demise id 210)
+    bool pendingKillChoice = false;
+    int pendingKillCount = 0;
+    int pendingKillMinCost = 0;
+    bool pendingKillMandatory = false;
+    bool pendingKillStayUntilCleanup = true;
+    std::uint32_t pendingAbilitySourceUid = 0;
+
+    // Heal Strike Modal (Sexual Tyrannosaurus id 0, I See You id 14, Sources and Contacts id 79, Crafty Veteran id 87)
+    bool pendingHealChoice = false;
+    bool pendingHealLeastOnly = false;
+
+    // Player Picker & Hand Discard Modal (1 = Ol' Painless pick player, 2 = Ol' Painless discard 2, 3 = I Can Get Even pick player)
+    int pendingPlayerChoiceMode = 0;
+    int pendingTargetPlayer = 0;
+    int pendingDiscardRemaining = 0;
+
+    // Same Kind of Jungle (id 13): Switch two cards in The Wilds (wilds_0..4 only)
+    bool pendingWildsSwapChoice = false;
+    int wildsSwapFirstSlot = -1;
+
+    // Role Card Call For Backup Modals (id 75 The Highest Tech, id 77 Position and Situation, id 81 Partners in Crime)
+    bool pendingStatSwapChoice = false;
+    bool pendingDiscardToDeckChoice = false;
+    bool pendingGainCardChoice = false;
+
+    // Like A Hunter (id 109): Informational top-3 deck reveal modal
+    bool pendingLikeAHunterModal = false;
+    std::vector<RevealedDeckCardEntry> likeAHunterRevealed;
 
     std::vector<std::string> playedClasses;
     std::vector<std::string> playedTeams;
     std::vector<std::string> playedCharacters;
-    std::vector<std::uint32_t> accountedPlayedUids; // Tracks cards in active player's played area already credited
+    std::vector<std::string> roundHandClasses;       // Classes present across active player's hand + played area + coordinated in Action Phase
+    std::vector<std::string> roundHandTeams;         // Teams present across active player's hand + played area + coordinated in Action Phase
+    std::vector<std::string> coordinatedClasses;     // Virtual classes contributed via Coordinate this turn
+    std::vector<std::string> coordinatedTeams;       // Virtual teams contributed via Coordinate this turn
+    std::vector<std::string> coordinatedCharacters;  // Virtual characters contributed via Coordinate this turn
+    std::vector<CardInst> coordinatedCards;          // Virtual copies of cards coordinated to the active player this turn
+    std::vector<std::uint32_t> accountedPlayedUids;  // Tracks cards already credited this turn
+    std::vector<std::uint32_t> triggeredSuperpowerUids; // Tracks cards whose superpower triggered this turn
+    std::vector<std::uint32_t> killedPlayedUids;     // Cards killed this turn (KILLED badge in Played Area, move to dead_characters at Cleanup)
+    std::vector<std::uint32_t> swappedStatUids;      // Cards whose printed Recruit & Attack are swapped this turn (id 75)
+    std::vector<std::uint32_t> lockedAccountedUids;  // Cards whose contributed turn stats remain locked even if removed mid-turn
+    std::unordered_map<std::uint32_t, int> accountedCardRecruit;
+    std::unordered_map<std::uint32_t, int> accountedCardAttack;
+    std::unordered_map<std::uint32_t, int> accountedCardAvoid;
+    std::unordered_map<std::uint32_t, int> accountedCardFreeScan;
+    std::unordered_map<std::uint32_t, int> accountedCardCombatPenalty;
+    std::unordered_map<std::uint32_t, int> accountedCardDrawOnKill;
+    std::unordered_map<std::uint32_t, int> abilityUsesThisTurn;
     std::string lastActionLog = "Mission ready: Step 1 — Enemy Phase.";
 
     std::uint32_t nextMoveSeq = 1;
@@ -180,8 +269,43 @@ public:
     int scanCostForZone(const std::string& zoneId) const;
     int effectiveEnemyAttack(const Pile& p) const;
     bool isWildsSpaceClear(int slotIdx) const; // True if no unattached card occupies wilds_{slotIdx}
+    bool isWildsSlotSwappable(int slotIdx) const;
     int countDiscardedEvents() const;          // Number of Event cards in discard_hazards
     bool canCompleteObjective2() const;
+    int expectedStrikesThisTurn(int* rawStrikesOut = nullptr, int* avoidOut = nullptr) const;
+    bool isCardKilledInPlayed(std::uint32_t cardUid) const;
+    bool isCardStatsSwapped(std::uint32_t cardUid) const;
+    void effectiveCardStats(const CardInst& c, int* recruitOut, int* attackOut) const;
+
+    // --- optional card ability queries & activation ----------------------------
+    int countTurnClass(std::string_view classType) const;
+    int countTurnTeam(std::string_view teamName) const;
+    int countOtherBarracksChars(std::string_view mySubtitle) const;
+    int maxAbilityActivationsForCard(const CardInst& c) const;
+    int remainingAbilityActivations(const CardInst& c, std::string* labelOut = nullptr,
+                                    std::string* reasonOut = nullptr) const;
+    bool canActivateCardAbility(std::uint32_t cardUid, std::string* labelOut = nullptr,
+                                std::string* reasonOut = nullptr) const;
+    std::string activateCardAbility(std::uint32_t cardUid, std::uint32_t seed);
+
+    // --- interactive modal resolution ------------------------------------------
+    bool hasPendingModal() const;
+    std::string cancelOptionalModal();
+    std::string selectSneakPeekWildsSlot(int slotIdx);
+    std::string resolveSneakPeekDecision(bool freeScanFaceUp, std::uint32_t seed);
+    std::string resolveKillCardChoice(std::uint32_t targetCardUid);
+    std::string resolveHealStrikeChoice(int targetPlayerIdx, std::uint32_t strikeCardUid,
+                                        std::uint32_t seed);
+    std::string resolvePlayerPickerChoice(int chosenPlayerIdx, std::uint32_t seed);
+    std::string resolveHandDiscardChoice(std::uint32_t handCardUid);
+    std::string resolveWildsSwapSlotClick(int slotIdx);
+    std::string resolveStatSwapChoice(std::uint32_t cardUid);
+    std::string resolveDiscardToDeckChoice(std::uint32_t cardUid);
+    std::string resolveGainCardChoice(const std::string& sourceZoneId);
+    void toggleCoverMeCard(std::uint32_t cardUid);
+    int selectedCoverMeAttackTotal() const;
+    std::string resolveCoverMeChoice(bool coverAndCancelStrike, std::uint32_t seed);
+    void dismissLikeAHunterModal() { state_.pendingLikeAHunterModal = false; }
 
     // --- physical tabletop operations (call checkpoint() once per user action) --
     void checkpoint();
@@ -222,6 +346,7 @@ public:
     std::string scanWilds(PileId targetPileId, std::uint32_t seed);
     std::string fightEnemy(PileId targetPileId, std::uint32_t seed);
     std::string completeObjective2();
+    std::string resolveSacrificeChoice(int chosenPlayerIdx);
     std::string resolveStrikePhase(std::uint32_t seed);
     std::string resolveCleanupPhase(std::uint32_t seed);
     void refillHQ();
@@ -236,13 +361,23 @@ public:
     // --- presentation ------------------------------------------------------------
     PileVisual& visual(PileId id);
     void updateVisuals(float dt, PileId held);
+    const std::vector<FlyingCardAnim>& flyingCards() const { return flyingCards_; }
+    bool isCardInFlight(std::uint32_t cardUid) const;
+    void queueCardFlight(CardInst card, Vec2 fromPos, Vec2 toPos, bool startFaceUp, bool endFaceUp,
+                         int staggerIdx = -1);
 
 private:
     int indexOf(PileId id) const;
     void syncVisuals();
+    Vec2 zoneCenterPos(const std::string& zoneId, Vec2 fallback = {1150.f, 540.f}) const;
+    std::vector<CardInst> collectActiveTurnCards() const;
+    void autoPlayHandCardsForRecruit(int recruitNeeded, std::string& logOut);
+    void autoPlayHandCardsForAttack(int attackNeeded, std::string& logOut);
+    void autoPlayHandCardMatchingDef(int defId, std::string& logOut);
     Pile& ensureZonePile(const std::string& zoneId, Vec2 defaultPos, const std::string& label);
     void attachCardToWildsSlot(int slotIdx, CardInst card);
     void revealAndAttachGuerrillaCamp(CardInst camp, std::string& logOut);
+    void revealThreeHundredCityBlocks(CardInst card115, std::uint32_t seed, std::string& logOut);
     void pushCardIntoWildsSlot(int slotIdx, CardInst card, std::uint32_t seed,
                                std::string& logOut);
     void moveCardToCombatZone(CardInst card, std::uint32_t seed, std::string& logOut);
@@ -263,6 +398,8 @@ private:
     TableState state_;
     std::deque<TableState> undo_, redo_;
     std::unordered_map<PileId, PileVisual> visuals_;
+    std::vector<FlyingCardAnim> flyingCards_;
+    int flightBatchCounter_ = 0;
     std::filesystem::path logFilePath_;
     std::filesystem::path textLogFilePath_;
 };

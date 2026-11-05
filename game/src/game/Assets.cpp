@@ -230,7 +230,13 @@ std::optional<Catalog> loadCatalog(const std::filesystem::path& file) {
             d.id = c["id"].get<int>();
             d.name = c["name"].get<std::string>();
             d.group = c["group"].get<std::string>();
-            d.texture = c["tex"].get<std::string>();
+            if (c.contains("tex") && c["tex"].is_string()) {
+                d.texture = c["tex"].get<std::string>();
+            } else if (c.contains("src") && c["src"].is_string()) {
+                std::filesystem::path rel(c["src"].get<std::string>());
+                rel.replace_extension(".jpg");
+                d.texture = "cards/" + rel.generic_string();
+            }
             d.landscape = c.value("land", false);
             d.qty = c.value("qty", 1);
             d.title = c.value("title", std::string{});

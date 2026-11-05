@@ -55,6 +55,8 @@ private:
     void renderTacticalHUD();
     void renderMoveLogWindow();
     void renderSetupWizardModal();
+    void renderSacrificeModal();
+    void renderAbilityModals();
     void renderContextMenu();
     void renderInspectModal();
     void renderPileBrowserModal();

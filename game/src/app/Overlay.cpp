@@ -58,6 +58,23 @@ const char* shortAvatarTitle(const Catalog& catalog, int avatarDefId) {
     return "Operative";
 }
 
+const char* wildsName(int slotIdx) {
+    switch (slotIdx) {
+    case 0:
+        return "Hills";
+    case 1:
+        return "Ruins";
+    case 2:
+        return "River";
+    case 3:
+        return "Graveyard";
+    case 4:
+        return "Underground";
+    default:
+        return "The Wilds";
+    }
+}
+
 } // namespace
 
 void App::renderOverlay() {
@@ -66,6 +83,8 @@ void App::renderOverlay() {
     renderTacticalHUD();
     renderMoveLogWindow();
     renderSetupWizardModal();
+    renderSacrificeModal();
+    renderAbilityModals();
     renderContextMenu();
     renderInspectModal();
     renderPileBrowserModal();
@@ -259,7 +278,7 @@ void App::renderWorldLabels() {
                     borderCol = IM_COL32(245, 158, 11, 235);
                 } else {
                     const int atk = table_->effectiveEnemyAttack(p);
-                    if (atk > 0) {
+                    if (atk >= 0) {
                         if (def.id == 118 && p.zone != "wilds_2") {
                             std::snprintf(badge, sizeof badge, "Fight: %d *", atk);
                             borderCol = (st.phase == TurnPhase::ActionPhase && st.recruitPool >= atk)
@@ -275,13 +294,13 @@ void App::renderWorldLabels() {
                 }
             } else if (p.zone == "combat" && top.faceUp) {
                 if (def.id == 114) {
-                    std::snprintf(badge, sizeof badge, "Rescue: 8 ///");
-                    if (st.phase == TurnPhase::ActionPhase && st.attackPool >= 8) {
+                    std::snprintf(badge, sizeof badge, "Choppa: 3 *");
+                    if (st.phase == TurnPhase::ActionPhase && st.recruitPool >= 3) {
                         borderCol = IM_COL32(74, 222, 128, 245);
                     }
                 } else {
                     const int atk = table_->effectiveEnemyAttack(p);
-                    if (atk > 0) {
+                    if (atk >= 0) {
                         if (def.id == 118) {
                             std::snprintf(badge, sizeof badge, "Fight: %d *", atk);
                             borderCol = (st.phase == TurnPhase::ActionPhase && st.recruitPool >= atk)
@@ -295,6 +314,17 @@ void App::renderWorldLabels() {
                         }
                     }
                 }
+            } else if (table_->isCardKilledInPlayed(top.uid)) {
+                std::snprintf(badge, sizeof badge, "KILLED (-> Dead)");
+                borderCol = IM_COL32(239, 68, 68, 255);
+            } else if (table_->canActivateCardAbility(top.uid)) {
+                std::snprintf(badge, sizeof badge, "ABILITY READY");
+                borderCol = IM_COL32(56, 189, 248, 255);
+            } else if (table_->isCardStatsSwapped(top.uid)) {
+                int effR = 0, effA = 0;
+                table_->effectiveCardStats(top, &effR, &effA);
+                std::snprintf(badge, sizeof badge, "SWAPPED %d*/%d///", effR, effA);
+                borderCol = IM_COL32(192, 132, 252, 245);
             }
 
             if (badge[0] != '\0') {
@@ -583,11 +613,77 @@ void App::renderTacticalHUD() {
         ImGui::SameLine();
         if (ImGui::SmallButton("0##ResetAtk")) st.attackPool = 0;
 
+        // Expected Strikes This Turn Indicator (shows Raw Strikes, Avoid Strike reduction, and Net Strikes)
+        int rawStrikes = 0, avoidCount = 0;
+        const int netStrikes = table_->expectedStrikesThisTurn(&rawStrikes, &avoidCount);
+        const ImVec4 expStrikeCol = (netStrikes == 0)
+                                        ? ImVec4(0.45f, 0.95f, 0.62f, 1.f)
+                                        : ImVec4(0.98f, 0.58f, 0.25f, 1.f);
+        if (avoidCount > 0) {
+            ImGui::TextColored(expStrikeCol,
+                               "Expected Strikes This Turn: %d (-%d Avoid) = %d Net", rawStrikes,
+                               avoidCount, netStrikes);
+        } else {
+            ImGui::TextColored(expStrikeCol, "Expected Strikes This Turn: %d", netStrikes);
+        }
+        if (st.freeScansAvailable > 0) {
+            ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.98f, 1.f), "Free Scans Ready: %d",
+                               st.freeScansAvailable);
+        }
+
         // Active Player Zone Card Counts Summary
         const std::string handZid = table_->activePlayerZone("hand");
         const std::string playedZid = table_->activePlayerZone("played");
         const std::string deckZid = table_->activePlayerZone("deck");
         const std::string discZid = table_->activePlayerZone("discard");
+
+        // Optional Card Abilities Panel (Hand + Played Area + Coordinated virtual copies)
+        if (st.phase == TurnPhase::ActionPhase) {
+            struct ReadyAbil {
+                std::uint32_t uid;
+                std::string cardName;
+                std::string label;
+                bool inHand;
+            };
+            std::vector<ReadyAbil> readyAbils;
+            for (const auto& p : st.piles) {
+                if ((p.zone == handZid || p.zone == playedZid) && !p.cards.empty()) {
+                    std::string lbl;
+                    if (table_->canActivateCardAbility(p.top().uid, &lbl, nullptr)) {
+                        const CardDef& cd = catalog_.card(p.top().def);
+                        readyAbils.push_back({p.top().uid,
+                                              cd.title.empty() ? cd.name : cd.title, lbl,
+                                              p.zone == handZid});
+                    }
+                }
+            }
+            for (const auto& cc : st.coordinatedCards) {
+                std::string lbl;
+                if (table_->canActivateCardAbility(cc.uid, &lbl, nullptr)) {
+                    const CardDef& cd = catalog_.card(cc.def);
+                    readyAbils.push_back(
+                        {cc.uid, (cd.title.empty() ? cd.name : cd.title) + " (Coord)", lbl, false});
+                }
+            }
+            if (!readyAbils.empty()) {
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.35f, 0.88f, 0.98f, 1.f),
+                                   "Optional Card Abilities Ready (%zu):", readyAbils.size());
+                for (const auto& ra : readyAbils) {
+                    ImGui::PushID(static_cast<int>(ra.uid));
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.34f, 0.46f, 1.f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.16f, 0.46f, 0.62f, 1.f));
+                    const std::string btnText =
+                        "Activate " + ra.cardName + ": " + ra.label;
+                    if (ImGui::Button(btnText.c_str(), ImVec2(-1.f, 0.f))) {
+                        table_->checkpoint();
+                        showToast(table_->activateCardAbility(ra.uid, rng_()));
+                    }
+                    ImGui::PopStyleColor(2);
+                    ImGui::PopID();
+                }
+            }
+        }
 
         int handCount = 0, playedCount = 0, deckCount = 0, discCount = 0;
         for (const auto& p : st.piles) {
@@ -939,6 +1035,670 @@ void App::renderSetupWizardModal() {
     ImGui::End();
 }
 
+void App::renderSacrificeModal() {
+    const TableState& st = table_->state();
+    if (!st.pendingSacrificeChoice) return;
+
+    const ImVec2 vp = ImGui::GetMainViewport()->Size;
+    ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(720.f, 0.f), ImGuiCond_Always);
+
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize |
+                                   ImGuiWindowFlags_NoSavedSettings |
+                                   ImGuiWindowFlags_NoCollapse;
+
+    if (ImGui::Begin("STRIKE: SACRIFICE (5 DAMAGE) — CHOOSE TARGET PLAYER###SacrificeModal",
+                     nullptr, flags)) {
+        const CardDef& sacDef = catalog_.card(st.pendingSacrificeCard.def);
+        const Texture sacTex = textures_->request(sacDef.texture);
+
+        ImGui::Columns(2, "SacrificeModalCols", false);
+        ImGui::SetColumnWidth(0, 220.f);
+
+        ImGui::Image(static_cast<ImTextureID>(sacTex ? sacTex.id : backTex_.id),
+                     ImVec2(195.f, 275.f));
+
+        ImGui::NextColumn();
+
+        const int srcP = st.pendingSacrificeSourcePlayer;
+        const int srcAv = (srcP >= 0 && srcP < static_cast<int>(st.players.size()))
+                              ? st.players[static_cast<size_t>(srcP)].avatarDefId
+                              : 72;
+
+        ImGui::TextColored(ImVec4(0.98f, 0.42f, 0.42f, 1.f),
+                           "Player %d (%s) received SACRIFICE (5 Damage)!", srcP + 1,
+                           shortAvatarTitle(catalog_, srcAv));
+        ImGui::Spacing();
+        ImGui::TextWrapped("Card Text: \"5 Damage. Another player may take this Strike instead of you.\"");
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.98f, 0.82f, 0.35f, 1.f),
+                           "Choose which player will receive this 5-Damage Strike:");
+        ImGui::TextDisabled("(If the chosen player's HP drops to 0 or below, that player will die!)");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        for (int pIdx = 0; pIdx < st.playerCount; ++pIdx) {
+            if (pIdx >= static_cast<int>(st.players.size())) break;
+            const PlayerState& ps = st.players[static_cast<size_t>(pIdx)];
+            if (!ps.alive) continue;
+
+            const int curHp = ps.health - ps.strikeDamage;
+            const int afterHp = ps.health - (ps.strikeDamage + 5);
+            const bool willDie = (afterHp <= 0 && ps.cannotDieTurnsRemaining <= 0);
+            const bool isOriginal = (pIdx == srcP);
+
+            if (willDie) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.12f, 0.14f, 1.f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.72f, 0.16f, 0.18f, 1.f));
+            } else if (isOriginal) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.28f, 0.34f, 0.22f, 1.f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.36f, 0.44f, 0.28f, 1.f));
+            } else {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14f, 0.38f, 0.26f, 1.f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.18f, 0.50f, 0.34f, 1.f));
+            }
+
+            char btnLbl[200];
+            std::snprintf(btnLbl, sizeof btnLbl,
+                          "%s Player %d (%s)  |  HP: %d/%d -> %d/%d%s###SacBtn%d",
+                          isOriginal ? "[Keep on Target]" : "[Redirect to Teammate]",
+                          pIdx + 1, shortAvatarTitle(catalog_, ps.avatarDefId),
+                          curHp, ps.health, afterHp, ps.health,
+                          willDie ? "   [FATAL — WILL DIE!]" : "", pIdx);
+
+            if (ImGui::Button(btnLbl, ImVec2(-1.f, 36.f))) {
+                table_->checkpoint();
+                showToast(table_->resolveSacrificeChoice(pIdx));
+            }
+
+            ImGui::PopStyleColor(2);
+            ImGui::Spacing();
+        }
+
+        ImGui::Columns(1);
+    }
+    ImGui::End();
+}
+
+void App::renderAbilityModals() {
+    TableState& st = table_->mutableState();
+    const ImVec2 vp = ImGui::GetMainViewport()->Size;
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize |
+                                   ImGuiWindowFlags_NoSavedSettings |
+                                   ImGuiWindowFlags_NoCollapse;
+
+    // 1. COVER ME! (def 191, 4 Damage): Teammates choose Attack cards totaling >= 4 /// to discard and cancel
+    if (st.pendingCoverMeChoice) {
+        ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(820.f, 0.f), ImGuiCond_Always);
+        if (ImGui::Begin("STRIKE: COVER ME! (4 DAMAGE) — TEAMMATE DISCARD PROMPT###CoverMeModal",
+                         nullptr, flags)) {
+            const CardDef& cmDef = catalog_.card(st.pendingCoverMeCard.def);
+            const Texture cmTex = textures_->request(cmDef.texture);
+            const int targetP = st.pendingCoverMeTargetPlayer;
+            const int targetAv = (targetP >= 0 && targetP < static_cast<int>(st.players.size()))
+                                     ? st.players[static_cast<size_t>(targetP)].avatarDefId
+                                     : 72;
+
+            ImGui::Columns(2, "CoverMeCols", false);
+            ImGui::SetColumnWidth(0, 210.f);
+            ImGui::Image(static_cast<ImTextureID>(cmTex ? cmTex.id : backTex_.id),
+                         ImVec2(185.f, 262.f));
+            ImGui::NextColumn();
+
+            ImGui::TextColored(ImVec4(0.98f, 0.42f, 0.42f, 1.f),
+                               "Player %d (%s) drew COVER ME! (4 Damage)!", targetP + 1,
+                               shortAvatarTitle(catalog_, targetAv));
+            ImGui::TextWrapped("Card Text: \"4 Damage. The other players may discard cards with a "
+                               "printed total of at least 4 [Attack] to cancel this Strike.\"");
+            ImGui::Spacing();
+
+            const int selAtk = table_->selectedCoverMeAttackTotal();
+            const ImVec4 atkCol = (selAtk >= 4) ? ImVec4(0.45f, 0.95f, 0.62f, 1.f)
+                                                : ImVec4(0.98f, 0.78f, 0.25f, 1.f);
+            ImGui::TextColored(atkCol, "Selected Teammate Attack to Discard: %d / 4 ///", selAtk);
+            ImGui::Separator();
+
+            ImGui::BeginChild("CoverMeCardsScroll", ImVec2(0.f, 195.f), true);
+            for (int p = 0; p < st.playerCount; ++p) {
+                if (p == targetP || p >= static_cast<int>(st.players.size())) continue;
+                const PlayerState& ps = st.players[static_cast<size_t>(p)];
+                if (!ps.alive || ps.escapedInChoppa) continue;
+
+                ImGui::TextColored(ImVec4(0.55f, 0.92f, 0.68f, 1.f), "Player %d (%s) Hand Cards:",
+                                   p + 1, shortAvatarTitle(catalog_, ps.avatarDefId));
+                const std::string hZid = table_->playerZone(p, "hand");
+                bool anyAtkInHand = false;
+                for (const auto& hp : st.piles) {
+                    if (hp.zone != hZid || hp.cards.empty()) continue;
+                    const CardInst& c = hp.top();
+                    const CardDef& cd = catalog_.card(c.def);
+                    if (cd.attack <= 0) continue;
+                    anyAtkInHand = true;
+                    const bool isSel =
+                        std::find(st.coverMeSelectedUids.begin(), st.coverMeSelectedUids.end(),
+                                  c.uid) != st.coverMeSelectedUids.end();
+                    ImGui::PushID(static_cast<int>(c.uid));
+                    if (isSel) {
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.52f, 0.32f, 1.f));
+                    }
+                    char cBtn[160];
+                    std::snprintf(cBtn, sizeof cBtn, "%s %s  (+%d /// Attack)",
+                                  isSel ? "[SELECTED]" : "[Select]",
+                                  (cd.title.empty() ? cd.name.c_str() : cd.title.c_str()),
+                                  cd.attack);
+                    if (ImGui::Button(cBtn, ImVec2(-1.f, 0.f))) {
+                        table_->toggleCoverMeCard(c.uid);
+                    }
+                    if (isSel) {
+                        ImGui::PopStyleColor();
+                    }
+                    ImGui::PopID();
+                }
+                if (!anyAtkInHand) {
+                    ImGui::TextDisabled("  (No Attack cards in hand)");
+                }
+                ImGui::Spacing();
+            }
+            ImGui::EndChild();
+
+            ImGui::BeginDisabled(selAtk < 4);
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.50f, 0.30f, 1.f));
+            const std::string coverBtn = "Discard Selected Cards (" + std::to_string(selAtk) +
+                                         " ///) & Cancel COVER ME!";
+            if (ImGui::Button(coverBtn.c_str(), ImVec2(-1.f, 34.f))) {
+                table_->checkpoint();
+                showToast(table_->resolveCoverMeChoice(true, rng_()));
+            }
+            ImGui::PopStyleColor();
+            ImGui::EndDisabled();
+
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.52f, 0.16f, 0.18f, 1.f));
+            char takeBtn[128];
+            std::snprintf(takeBtn, sizeof takeBtn,
+                          "Decline Cover — Player %d Takes 4 Damage", targetP + 1);
+            if (ImGui::Button(takeBtn, ImVec2(-1.f, 32.f))) {
+                table_->checkpoint();
+                showToast(table_->resolveCoverMeChoice(false, rng_()));
+            }
+            ImGui::PopStyleColor();
+
+            ImGui::Columns(1);
+        }
+        ImGui::End();
+    }
+
+    // 2. SNEAK PEEK MODAL (Pushing Pencils id 5): Look at a hidden card in The Wilds without revealing it; optional free scan
+    if (st.pendingSneakPeekChoice) {
+        ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(720.f, 0.f), ImGuiCond_Always);
+        if (ImGui::Begin("PUSHING PENCILS [TECH]: SNEAK PEEK HIDDEN WILDS CARD###SneakPeekModal",
+                         nullptr, flags)) {
+            if (!st.sneakPeekRevealedCardSelected) {
+                ImGui::TextColored(ImVec4(0.35f, 0.88f, 0.98f, 1.f),
+                                   "Step 1: Choose a hidden (face-down) card in The Wilds to privately inspect:");
+                ImGui::TextDisabled("(Looking at the card will NOT trigger its Reveal effect unless you choose to open it face-up.)");
+                ImGui::Spacing();
+                for (int s = 0; s <= 4; ++s) {
+                    const Pile* wp = table_->findZonePile("wilds_" + std::to_string(s));
+                    const bool isHidden = (wp && !wp->cards.empty() && !wp->top().faceUp);
+                    ImGui::BeginDisabled(!isHidden);
+                    char sBtn[128];
+                    std::snprintf(sBtn, sizeof sBtn, "Slot %d: %s  (%s)", s + 1, wildsName(s),
+                                  isHidden ? "Face-Down — Click to Sneak Peek" : "Not Face-Down");
+                    if (ImGui::Button(sBtn, ImVec2(-1.f, 34.f))) {
+                        table_->checkpoint();
+                        showToast(table_->selectSneakPeekWildsSlot(s));
+                    }
+                    ImGui::EndDisabled();
+                }
+                ImGui::Spacing();
+                if (ImGui::Button("Cancel Sneak Peek", ImVec2(-1.f, 0.f))) {
+                    showToast(table_->cancelOptionalModal());
+                }
+            } else {
+                const int slotIdx = st.sneakPeekWildsSlot;
+                const Pile* wp = table_->findZonePile("wilds_" + std::to_string(slotIdx));
+                if (wp && !wp->cards.empty()) {
+                    const CardDef& peekDef = catalog_.card(wp->top().def);
+                    const Texture peekTex = textures_->request(peekDef.texture);
+
+                    ImGui::Columns(2, "SneakPeekCols", false);
+                    ImGui::SetColumnWidth(0, 230.f);
+                    ImGui::Image(static_cast<ImTextureID>(peekTex ? peekTex.id : backTex_.id),
+                                 ImVec2(205.f, 290.f));
+                    ImGui::NextColumn();
+
+                    ImGui::TextColored(ImVec4(0.98f, 0.82f, 0.25f, 1.f),
+                                       "PRIVATE SNEAK PEEK — %s:", wildsName(slotIdx));
+                    ImGui::TextColored(ImVec4(0.50f, 0.96f, 0.68f, 1.f), "%s",
+                                       peekDef.title.empty() ? peekDef.name.c_str()
+                                                             : peekDef.title.c_str());
+                    if (!peekDef.subtitle.empty()) {
+                        ImGui::TextDisabled("%s", peekDef.subtitle.c_str());
+                    }
+                    if (peekDef.attack >= 0) {
+                        ImGui::TextColored(ImVec4(0.98f, 0.42f, 0.42f, 1.f), "Attack: %d ///",
+                                           peekDef.attack);
+                    }
+                    ImGui::Separator();
+                    ImGui::TextWrapped("%s", peekDef.rulesText.c_str());
+                    ImGui::Spacing();
+                    ImGui::Separator();
+                    ImGui::Spacing();
+
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14f, 0.48f, 0.30f, 1.f));
+                    if (ImGui::Button("Open Face-Up & Scan For Free (Triggers Reveal Effect)",
+                                      ImVec2(-1.f, 38.f))) {
+                        table_->checkpoint();
+                        showToast(table_->resolveSneakPeekDecision(true, rng_()));
+                    }
+                    ImGui::PopStyleColor();
+
+                    ImGui::Spacing();
+                    if (ImGui::Button("Keep Hidden (Leave Face-Down Without Revealing)",
+                                      ImVec2(-1.f, 36.f))) {
+                        table_->checkpoint();
+                        showToast(table_->resolveSneakPeekDecision(false, rng_()));
+                    }
+                    ImGui::Columns(1);
+                }
+            }
+        }
+        ImGui::End();
+    }
+
+    // 3. CHOOSE CARD TO KILL MODAL (Stick Around id 8, Running the Streets id 69, Nothing On Earth id 117, A Fitting Demise id 210)
+    if (st.pendingKillChoice) {
+        ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(760.f, 0.f), ImGuiCond_Always);
+        if (ImGui::Begin("CHOOSE A CARD TO KILL###KillCardModal", nullptr, flags)) {
+            if (st.pendingKillStayUntilCleanup) {
+                ImGui::TextColored(ImVec4(0.98f, 0.80f, 0.25f, 1.f),
+                                   "Choose a card from your Hand or Played Area to kill:");
+                ImGui::TextDisabled("The killed card stays in your Played Area with a [KILLED] badge until Cleanup, "
+                                    "providing its Recruit, Attack, Class, and Team for the rest of this turn!");
+            } else {
+                ImGui::TextColored(ImVec4(0.98f, 0.42f, 0.42f, 1.f),
+                                   "Mandatory Enemy Death Effect: Choose %d card(s) with Cost >= %d to kill:",
+                                   st.pendingKillCount, st.pendingKillMinCost);
+            }
+            ImGui::Separator();
+
+            const std::string handZid = table_->activePlayerZone("hand");
+            const std::string playedZid = table_->activePlayerZone("played");
+
+            ImGui::BeginChild("KillCandList", ImVec2(0.f, 260.f), true);
+            for (const auto& p : st.piles) {
+                if ((p.zone != handZid && p.zone != playedZid) || p.cards.empty()) continue;
+                const CardInst& c = p.top();
+                if (table_->isCardKilledInPlayed(c.uid)) continue;
+                if (!st.pendingKillMandatory && c.uid == st.pendingAbilitySourceUid) continue;
+                const CardDef& cd = catalog_.card(c.def);
+                if (cd.cost < st.pendingKillMinCost) continue;
+
+                ImGui::PushID(static_cast<int>(c.uid));
+                int effR = 0, effA = 0;
+                table_->effectiveCardStats(c, &effR, &effA);
+                char kBtn[200];
+                std::snprintf(kBtn, sizeof kBtn,
+                              "Kill [%s] %s  (Cost %d | %d * / %d /// | %s)",
+                              (p.zone == handZid ? "Hand" : "Played"),
+                              (cd.title.empty() ? cd.name.c_str() : cd.title.c_str()),
+                              std::max(0, cd.cost), effR, effA,
+                              cd.classType.empty() ? "Starter" : cd.classType.c_str());
+                if (ImGui::Button(kBtn, ImVec2(-1.f, 32.f))) {
+                    table_->checkpoint();
+                    showToast(table_->resolveKillCardChoice(c.uid));
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
+
+            if (!st.pendingKillMandatory) {
+                if (ImGui::Button("Cancel (Do Not Kill a Card)", ImVec2(-1.f, 0.f))) {
+                    showToast(table_->cancelOptionalModal());
+                }
+            }
+        }
+        ImGui::End();
+    }
+
+    // 4. HEAL STRIKE MODAL (Sexual Tyrannosaurus id 0, I See You id 14, Sources and Contacts id 79, Crafty Veteran id 87)
+    if (st.pendingHealChoice) {
+        ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(720.f, 0.f), ImGuiCond_Always);
+        if (ImGui::Begin("CHOOSE A STRIKE TO HEAL###HealStrikeModal", nullptr, flags)) {
+            if (st.pendingHealLeastOnly) {
+                ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.62f, 1.f),
+                                   "Sexual Tyrannosaurus [Survival]: Choose a lowest-damage Strike to heal:");
+            } else {
+                ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.62f, 1.f),
+                                   "Choose a Strike to heal (Open Wound must be healed before other Strikes on that player):");
+            }
+            ImGui::Separator();
+
+            int minGlobalDmg = 999;
+            if (st.pendingHealLeastOnly) {
+                for (int q = 0; q < st.playerCount; ++q) {
+                    const Pile* qw = table_->findZonePile(table_->playerZone(q, "strikes"));
+                    if (!qw || qw->cards.empty()) continue;
+                    bool qOpen = false;
+                    for (const auto& qc : qw->cards) {
+                        if (qc.def == 194) qOpen = true;
+                    }
+                    for (const auto& qc : qw->cards) {
+                        if (qOpen && qc.def != 194) continue;
+                        minGlobalDmg =
+                            std::min(minGlobalDmg, std::max(0, catalog_.card(qc.def).attack));
+                    }
+                }
+            }
+
+            ImGui::BeginChild("HealStrikeList", ImVec2(0.f, 240.f), true);
+            for (int q = 0; q < st.playerCount; ++q) {
+                if (q >= static_cast<int>(st.players.size()) ||
+                    !st.players[static_cast<size_t>(q)].alive) {
+                    continue;
+                }
+                const Pile* qw = table_->findZonePile(table_->playerZone(q, "strikes"));
+                if (!qw || qw->cards.empty()) continue;
+
+                bool hasOpenWound = false;
+                for (const auto& qc : qw->cards) {
+                    if (qc.def == 194) hasOpenWound = true;
+                }
+
+                ImGui::TextColored(ImVec4(0.98f, 0.82f, 0.35f, 1.f), "Player %d (%s) Strikes:",
+                                   q + 1,
+                                   shortAvatarTitle(catalog_,
+                                                    st.players[static_cast<size_t>(q)].avatarDefId));
+                for (const auto& sc : qw->cards) {
+                    const CardDef& sd = catalog_.card(sc.def);
+                    const int dmg = std::max(0, sd.attack);
+                    const bool blockedByOpenWound = (hasOpenWound && sc.def != 194);
+                    const bool blockedByLeastRule =
+                        (st.pendingHealLeastOnly && dmg > minGlobalDmg);
+                    ImGui::PushID(static_cast<int>(sc.uid));
+                    ImGui::BeginDisabled(blockedByOpenWound || blockedByLeastRule);
+                    char hBtn[200];
+                    std::snprintf(hBtn, sizeof hBtn, "Heal P%d: %s (%d DMG)%s%s", q + 1,
+                                  sd.name.c_str(), dmg,
+                                  (sc.def == 190 ? " [Permanent Damage: Draws 1 Strike]" : ""),
+                                  (blockedByOpenWound ? " [Must heal Open Wound first]" : ""));
+                    if (ImGui::Button(hBtn, ImVec2(-1.f, 32.f))) {
+                        table_->checkpoint();
+                        showToast(table_->resolveHealStrikeChoice(q, sc.uid, rng_()));
+                    }
+                    ImGui::EndDisabled();
+                    ImGui::PopID();
+                }
+                ImGui::Spacing();
+            }
+            ImGui::EndChild();
+
+            if (ImGui::Button("Cancel Heal", ImVec2(-1.f, 0.f))) {
+                showToast(table_->cancelOptionalModal());
+            }
+        }
+        ImGui::End();
+    }
+
+    // 5. PLAYER PICKER & DISCARD 2 MODAL (Ol' Painless Is Waiting id 1, I Can Get Even id 7)
+    if (st.pendingPlayerChoiceMode != 0) {
+        ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(700.f, 0.f), ImGuiCond_Always);
+        if (ImGui::Begin("PLAYER ABILITY PROMPT###PlayerPickerModal", nullptr, flags)) {
+            if (st.pendingPlayerChoiceMode == 1 || st.pendingPlayerChoiceMode == 3) {
+                ImGui::TextColored(
+                    ImVec4(0.45f, 0.95f, 0.62f, 1.f), "%s",
+                    st.pendingPlayerChoiceMode == 1
+                        ? "Ol' Painless Is Waiting [Leadership]: Choose a player to draw 2 cards, then discard 2 cards:"
+                        : "I Can Get Even: Choose a player whose hand cards all gain Coordinate this turn:");
+                ImGui::Separator();
+                for (int q = 0; q < st.playerCount; ++q) {
+                    if (q >= static_cast<int>(st.players.size())) break;
+                    const PlayerState& ps = st.players[static_cast<size_t>(q)];
+                    if (!ps.alive || ps.escapedInChoppa) continue;
+                    char pBtn[128];
+                    std::snprintf(pBtn, sizeof pBtn, "Choose Player %d (%s)", q + 1,
+                                  shortAvatarTitle(catalog_, ps.avatarDefId));
+                    if (ImGui::Button(pBtn, ImVec2(-1.f, 34.f))) {
+                        table_->checkpoint();
+                        showToast(table_->resolvePlayerPickerChoice(q, rng_()));
+                    }
+                }
+                ImGui::Spacing();
+                if (ImGui::Button("Cancel", ImVec2(-1.f, 0.f))) {
+                    showToast(table_->cancelOptionalModal());
+                }
+            } else if (st.pendingPlayerChoiceMode == 2) {
+                const int tp = st.pendingTargetPlayer;
+                ImGui::TextColored(ImVec4(0.98f, 0.82f, 0.25f, 1.f),
+                                   "Ol' Painless Is Waiting: Choose %d more card(s) from Player %d's Hand to discard:",
+                                   st.pendingDiscardRemaining, tp + 1);
+                ImGui::Separator();
+                const std::string hZid = table_->playerZone(tp, "hand");
+                ImGui::BeginChild("Discard2HandList", ImVec2(0.f, 230.f), true);
+                for (const auto& p : st.piles) {
+                    if (p.zone != hZid || p.cards.empty()) continue;
+                    const CardInst& c = p.top();
+                    const CardDef& cd = catalog_.card(c.def);
+                    ImGui::PushID(static_cast<int>(c.uid));
+                    char dBtn[180];
+                    std::snprintf(dBtn, sizeof dBtn, "Discard %s  (%d * / %d ///)",
+                                  (cd.title.empty() ? cd.name.c_str() : cd.title.c_str()),
+                                  std::max(0, cd.recruit), std::max(0, cd.attack));
+                    if (ImGui::Button(dBtn, ImVec2(-1.f, 32.f))) {
+                        table_->checkpoint();
+                        showToast(table_->resolveHandDiscardChoice(c.uid));
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::EndChild();
+            }
+        }
+        ImGui::End();
+    }
+
+    // 6. SWITCH TWO WILDS CARDS MODAL (Same Kind of Jungle id 13 — Wilds 0..4 only)
+    if (st.pendingWildsSwapChoice) {
+        ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(720.f, 0.f), ImGuiCond_Always);
+        if (ImGui::Begin("SAME KIND OF JUNGLE [STRENGTH]: SWITCH TWO WILDS CARDS###WildsSwapModal",
+                         nullptr, flags)) {
+            ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.62f, 1.f),
+                               "Select two spaces in The Wilds to switch their cards (Wilds only; Combat Zone & attached Goals cannot be switched):");
+            ImGui::Separator();
+            for (int s = 0; s <= 4; ++s) {
+                const bool swappable = table_->isWildsSlotSwappable(s);
+                const Pile* wp = table_->findZonePile("wilds_" + std::to_string(s));
+                std::string desc = "Empty";
+                if (wp && !wp->cards.empty()) {
+                    const CardInst& top = wp->top();
+                    desc = top.faceUp ? catalog_.card(top.def).name : "Hidden (Face-Down Card)";
+                    if (top.attached || top.def == 102) desc += " [Attached Goal — Cannot Switch]";
+                }
+                const bool isFirst = (st.wildsSwapFirstSlot == s);
+                ImGui::BeginDisabled(!swappable);
+                if (isFirst) {
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.50f, 0.30f, 1.f));
+                }
+                char wBtn[180];
+                std::snprintf(wBtn, sizeof wBtn, "%sSlot %d (%s): %s",
+                              isFirst ? "[FIRST SELECTED] " : "", s + 1, wildsName(s),
+                              desc.c_str());
+                if (ImGui::Button(wBtn, ImVec2(-1.f, 34.f))) {
+                    table_->checkpoint();
+                    showToast(table_->resolveWildsSwapSlotClick(s));
+                }
+                if (isFirst) {
+                    ImGui::PopStyleColor();
+                }
+                ImGui::EndDisabled();
+            }
+            ImGui::Spacing();
+            if (ImGui::Button("Cancel Switch", ImVec2(-1.f, 0.f))) {
+                showToast(table_->cancelOptionalModal());
+            }
+        }
+        ImGui::End();
+    }
+
+    // 7. ROLE CARD MODALS (id 75 The Highest Tech, id 77 Position and Situation, id 81 Partners in Crime)
+    if (st.pendingStatSwapChoice) {
+        ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(700.f, 0.f), ImGuiCond_Always);
+        if (ImGui::Begin("THE HIGHEST TECH: SWAP CARD RECRUIT & ATTACK###StatSwapModal", nullptr,
+                         flags)) {
+            ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.62f, 1.f),
+                               "Choose a card in your Hand or Played Area to swap its printed Recruit * and Attack /// this turn:");
+            ImGui::Separator();
+            const std::string handZid = table_->activePlayerZone("hand");
+            const std::string playedZid = table_->activePlayerZone("played");
+            ImGui::BeginChild("StatSwapList", ImVec2(0.f, 230.f), true);
+            for (const auto& p : st.piles) {
+                if ((p.zone != handZid && p.zone != playedZid) || p.cards.empty()) continue;
+                const CardInst& c = p.top();
+                const CardDef& cd = catalog_.card(c.def);
+                int curR = 0, curA = 0;
+                table_->effectiveCardStats(c, &curR, &curA);
+                ImGui::PushID(static_cast<int>(c.uid));
+                char sBtn[180];
+                std::snprintf(sBtn, sizeof sBtn, "Swap %s  (%d * / %d /// -> %d * / %d ///)",
+                              (cd.title.empty() ? cd.name.c_str() : cd.title.c_str()), curR, curA,
+                              curA, curR);
+                if (ImGui::Button(sBtn, ImVec2(-1.f, 32.f))) {
+                    table_->checkpoint();
+                    showToast(table_->resolveStatSwapChoice(c.uid));
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
+            if (ImGui::Button("Cancel", ImVec2(-1.f, 0.f))) {
+                showToast(table_->cancelOptionalModal());
+            }
+        }
+        ImGui::End();
+    }
+
+    if (st.pendingDiscardToDeckChoice) {
+        ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(700.f, 0.f), ImGuiCond_Always);
+        if (ImGui::Begin("POSITION AND SITUATION: PLACE DISCARD CARD ON DECK TOP###DiscToDeckModal",
+                         nullptr, flags)) {
+            ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.62f, 1.f),
+                               "Choose a card from your Discard pile to place face-down on top of your Deck:");
+            ImGui::Separator();
+            const Pile* disc = table_->findZonePile(table_->activePlayerZone("discard"));
+            ImGui::BeginChild("DiscToDeckList", ImVec2(0.f, 230.f), true);
+            if (disc) {
+                for (int i = static_cast<int>(disc->cards.size()) - 1; i >= 0; --i) {
+                    const CardInst& c = disc->cards[static_cast<size_t>(i)];
+                    const CardDef& cd = catalog_.card(c.def);
+                    ImGui::PushID(static_cast<int>(c.uid));
+                    char dBtn[180];
+                    std::snprintf(dBtn, sizeof dBtn, "Place on Deck Top: %s  (%d * / %d ///)",
+                                  (cd.title.empty() ? cd.name.c_str() : cd.title.c_str()),
+                                  std::max(0, cd.recruit), std::max(0, cd.attack));
+                    if (ImGui::Button(dBtn, ImVec2(-1.f, 32.f))) {
+                        table_->checkpoint();
+                        showToast(table_->resolveDiscardToDeckChoice(c.uid));
+                    }
+                    ImGui::PopID();
+                }
+            }
+            ImGui::EndChild();
+            if (ImGui::Button("Cancel", ImVec2(-1.f, 0.f))) {
+                showToast(table_->cancelOptionalModal());
+            }
+        }
+        ImGui::End();
+    }
+
+    if (st.pendingGainCardChoice) {
+        ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(700.f, 0.f), ImGuiCond_Always);
+        if (ImGui::Begin("PARTNERS IN CRIME: GAIN COMMANDER OR HQ CARD (COST <= 3)###GainCardModal",
+                         nullptr, flags)) {
+            ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.62f, 1.f),
+                               "Choose a Commander or an HQ card costing 3 * or less to gain to your Discard pile:");
+            ImGui::Separator();
+            if (const Pile* cmd = table_->findZonePile("commanders");
+                cmd && !cmd->cards.empty()) {
+                const CardDef& cd = catalog_.card(cmd->top().def);
+                const std::string cBtn = "Gain Commander: " + cd.name + " (Cost 3 *)";
+                if (ImGui::Button(cBtn.c_str(), ImVec2(-1.f, 34.f))) {
+                    table_->checkpoint();
+                    showToast(table_->resolveGainCardChoice("commanders"));
+                }
+            }
+            for (int h = 0; h < 5; ++h) {
+                const std::string hZid = "hq_" + std::to_string(h);
+                const Pile* hp = table_->findZonePile(hZid);
+                if (!hp || hp->cards.empty()) continue;
+                const CardDef& hd = catalog_.card(hp->top().def);
+                const int cost = std::max(0, hd.cost);
+                ImGui::BeginDisabled(cost > 3);
+                char hBtn[180];
+                std::snprintf(hBtn, sizeof hBtn, "HQ %d: %s  (Cost %d *)", h + 1, hd.name.c_str(),
+                              cost);
+                if (ImGui::Button(hBtn, ImVec2(-1.f, 34.f))) {
+                    table_->checkpoint();
+                    showToast(table_->resolveGainCardChoice(hZid));
+                }
+                ImGui::EndDisabled();
+            }
+            ImGui::Spacing();
+            if (ImGui::Button("Cancel", ImVec2(-1.f, 0.f))) {
+                showToast(table_->cancelOptionalModal());
+            }
+        }
+        ImGui::End();
+    }
+
+    // 8. LIKE A HUNTER (id 109): Informational Top-3 Deck Reveal Modal
+    if (st.pendingLikeAHunterModal) {
+        ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(680.f, 0.f), ImGuiCond_Always);
+        if (ImGui::Begin("LIKE A HUNTER — TOP 3 PLAYER DECK REVEAL###LikeAHunterModal", nullptr,
+                         flags)) {
+            ImGui::TextColored(ImVec4(0.98f, 0.45f, 0.45f, 1.f),
+                               "Like A Hunter Revealed: Each player revealed the top 3 cards of their deck!");
+            ImGui::TextDisabled("(Cards with Cost >= 1 were discarded; Cost 0 Starters were returned to the top of the deck.)");
+            ImGui::Separator();
+
+            ImGui::BeginChild("LikeAHunterList", ImVec2(0.f, 220.f), true);
+            for (const auto& entry : st.likeAHunterRevealed) {
+                const CardDef& cd = catalog_.card(entry.card.def);
+                const ImVec4 col = entry.discarded ? ImVec4(0.98f, 0.48f, 0.48f, 1.f)
+                                                   : ImVec4(0.55f, 0.95f, 0.68f, 1.f);
+                ImGui::TextColored(col, "P%d: %-30s (Cost %d) -> %s", entry.playerIdx + 1,
+                                   (cd.title.empty() ? cd.name.c_str() : cd.title.c_str()),
+                                   entry.cost,
+                                   entry.discarded ? "DISCARDED" : "KEPT ON TOP OF DECK");
+            }
+            ImGui::EndChild();
+
+            if (ImGui::Button("Acknowledge & Continue", ImVec2(-1.f, 34.f))) {
+                table_->dismissLikeAHunterModal();
+            }
+        }
+        ImGui::End();
+    }
+}
+
 void App::renderContextMenu() {
     if (openContextMenu_) {
         ImGui::OpenPopup("PileContextMenu");
@@ -1045,18 +1805,32 @@ void App::renderContextMenu() {
         }
         ImGui::Separator();
     } else if (ph == TurnPhase::ActionPhase) {
+        std::string abilLbl;
+        if (table_->canActivateCardAbility(top.uid, &abilLbl, nullptr)) {
+            const std::string menuLbl = "Activate Ability: " + abilLbl;
+            if (ImGui::MenuItem(menuLbl.c_str())) {
+                table_->checkpoint();
+                showToast(table_->activateCardAbility(top.uid, rng_()));
+            }
+            ImGui::Separator();
+        }
         if (isPZone && zoneRole == "hand") {
             if (zoneOwnerP == st.activePlayer) {
-                if (ImGui::MenuItem("Play Card", "Double-Click")) {
+                if (ImGui::MenuItem("Play Card to Played Area", "Double-Click")) {
                     showToast(table_->playCard(p->id, rng_()));
                 }
             }
-            bool hasCoord = false;
+            bool hasCoord = (zoneOwnerP >= 0 && zoneOwnerP < static_cast<int>(st.players.size()) &&
+                             st.players[static_cast<size_t>(zoneOwnerP)].allHandCoordinateThisTurn);
             for (const auto& kw : def.keywords) {
                 if (kw == "Coordinate") hasCoord = true;
             }
             if (hasCoord && (st.playerCount == 1 || zoneOwnerP != st.activePlayer)) {
-                if (ImGui::MenuItem("Coordinate Card (Lend Virtual Copy & Draw 1)",
+                const char* coordLbl =
+                    (st.playerCount == 1)
+                        ? "Coordinate Card (Solo 1P: Discard & Draw 1 for Call For Backup)"
+                        : "Coordinate Card (Lend Virtual Copy & Draw 1)";
+                if (ImGui::MenuItem(coordLbl,
                                     zoneOwnerP != st.activePlayer ? "Double-Click" : nullptr)) {
                     showToast(table_->coordinateCard(p->id, rng_()));
                 }
@@ -1078,7 +1852,9 @@ void App::renderContextMenu() {
             ImGui::Separator();
         } else if ((p->zone.rfind("wilds_", 0) == 0 || p->zone == "combat") && top.faceUp) {
             const char* fightLbl =
-                (top.def == 102) ? "Wipe Out Guerrilla Camp (1 ///)" : "Fight / Resolve Card";
+                (top.def == 102)
+                    ? "Wipe Out Guerrilla Camp (1 ///)"
+                    : (top.def == 114 ? "Board The Choppa! (Spend 3 *)" : "Fight / Resolve Card");
             if (ImGui::MenuItem(fightLbl, "Double-Click")) {
                 showToast(table_->fightEnemy(p->id, rng_()));
             }
@@ -1223,17 +1999,31 @@ void App::renderInspectModal() {
             if (Pile* ip = table_->find(inspectPile_);
                 ip && !ip->cards.empty() && ip->top().def == inspectCardDef_ &&
                 st.phase == TurnPhase::ActionPhase) {
+                std::string abilLbl;
+                if (table_->canActivateCardAbility(ip->top().uid, &abilLbl, nullptr)) {
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.38f, 0.52f, 1.f));
+                    const std::string actBtn = "Activate Ability: " + abilLbl;
+                    if (ImGui::Button(actBtn.c_str(), ImVec2(-1.f, 0.f))) {
+                        table_->checkpoint();
+                        showToast(table_->activateCardAbility(ip->top().uid, rng_()));
+                        open = false;
+                    }
+                    ImGui::PopStyleColor();
+                    ImGui::Separator();
+                }
                 int ownerP = -1;
                 std::string_view role;
                 const bool isPZone = parsePlayerZone(ip->zone, ownerP, role);
                 if (isPZone && role == "hand") {
                     if (ownerP == st.activePlayer) {
-                        if (ImGui::Button("Play Card Now", ImVec2(-1.f, 0.f))) {
+                        if (ImGui::Button("Play Card to Played Area", ImVec2(-1.f, 0.f))) {
                             showToast(table_->playCard(ip->id, rng_()));
                             open = false;
                         }
                     }
-                    bool hasCoord = false;
+                    bool hasCoord =
+                        (ownerP >= 0 && ownerP < static_cast<int>(st.players.size()) &&
+                         st.players[static_cast<size_t>(ownerP)].allHandCoordinateThisTurn);
                     for (const auto& kw : def.keywords) {
                         if (kw == "Coordinate") hasCoord = true;
                     }
@@ -1255,7 +2045,10 @@ void App::renderInspectModal() {
                     ImGui::Separator();
                 } else if (ip->zone.rfind("wilds_", 0) == 0 || ip->zone == "combat") {
                     const char* btnLbl =
-                        (def.id == 102) ? "Wipe Out Guerrilla Camp (1 ///)" : "Fight / Resolve Card";
+                        (def.id == 102)
+                            ? "Wipe Out Guerrilla Camp (1 ///)"
+                            : (def.id == 114 ? "Board The Choppa! (Spend 3 *)"
+                                             : "Fight / Resolve Card");
                     if (ImGui::Button(btnLbl, ImVec2(-1.f, 0.f))) {
                         const std::uint32_t prevUid = ip->top().uid;
                         showToast(table_->fightEnemy(ip->id, rng_()));
@@ -1293,12 +2086,12 @@ void App::renderInspectModal() {
                     if (kw == "Coordinate") {
                         ImGui::TextWrapped("During another player's turn, set this card aside from your hand "
                                            "face-up and immediately draw 1 replacement card. The active turn "
-                                           "player plays a virtual copy of it; at end of turn it goes to your "
-                                           "discard pile.");
+                                           "player gains a virtual copy of it (providing its stats, class, team, "
+                                           "character, and ability until end of turn).");
                     } else if (kw == "Brothers in Arms") {
-                        ImGui::TextWrapped("Activates when you have played 4 or more different Barracks "
-                                           "Characters this turn (Starters, Commanders, and Role cards do not "
-                                           "count). Triggers retroactively if you reach 4 later in the turn!");
+                        ImGui::TextWrapped("Triggers once for each OTHER distinct Barracks character "
+                                           "(0 to 3 times across Blain, Dillon, Dutch, Mac) present in your "
+                                           "current turn cards (Hand + Played Area + Coordinated cards)!");
                     } else if (kw == "Attach") {
                         ImGui::TextWrapped("Moves normally through The Wilds while face-down. When revealed, "
                                            "attaches to its target Location (sitting at the bottom of a 2-card "

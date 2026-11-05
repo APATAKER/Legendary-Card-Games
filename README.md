@@ -26,16 +26,17 @@ The main deliverable is a **native Windows game** built with C++20, OpenGL, SDL3
 
 ### Native desktop game (`game/`)
 
-- **Whole-box tabletop.** All 331 distinct card printings (700 physical cards) are on a pannable, zoomable table. You can drag, stack, split, flip, rotate and shuffle cards, use snap-to-slot drop zones, multi-select piles, and have animated lift and flip feedback.
-- **Rulebook turn engine.** It follows the four-step turn sequence: Enemy Phase, Action Phase, Strike Phase and Cleanup. It also handles Recruit, Scan the Wilds, Fight, Coordinate, the Objective stack (Expendable Assets → Flares/Frags → *Get to the Choppa!*), Victory and Defeat.
+- **Whole-box tabletop.** All 331 distinct card printings (700 physical cards) are on a pannable, zoomable table. You can drag, stack, split, flip, rotate and shuffle cards, use snap-to-slot drop zones, multi-select piles, and have animated lift, flip and pile-to-pile flying card feedback.
+- **Rulebook turn engine.** It follows the four-step turn sequence: Enemy Phase, Action Phase, Strike Phase and Cleanup. Hand stats (`*` Recruit and `///` Attack) are immediately available in the Action Phase and auto-play cards on spend (prioritising 0-cost Starters first). It also handles Recruit, Scan the Wilds, Fight, Coordinate, the Objective stack (Expendable Assets → Flares/Frags → *Get to the Choppa!*), Victory and Defeat.
+- **Optional card abilities and interactive modals.** Supports `[Class]` and `[Team]` abilities (requiring 2+ matching cards in the turn), dynamic `Brothers in Arms` scaling ($0..3\times$ across Blain, Dillon, Dutch and Mac), `Call for Backup` Role abilities, and interactive prompts for Choose Card to Kill (keeping a `KILLED` badge and stats in the Played Area until Cleanup), Heal Strike (`Open Wound` and `Permanent Damage` rules), `Pushing Pencils` Sneak Peek, `Same Kind of Jungle` Wilds swap, `Ol' Painless Is Waiting`, `I Can Get Even`, `Sacrifice` redirection, `Cover Me!` teammate discard, and `Like A Hunter` deck reveals.
 - **New mission setup wizard.** Choose *Predator* (1987) or *Predator 2* (1990), play as Humans (co-op) or Predators (Hunter Mode), and pick 1–5 players with unique, faction-valid Avatars.
 - **Multiplayer boards.** Each player gets their own non-overlapping 7-zone board: Avatar, Strikes, Marks, Played, Hand, Deck and Discard. Turns rotate between players, and the game handles Coordinate and player elimination.
-- **Wilds mechanics.** Attach cards, Guerrilla Camp, location hazards and enemy push-through into the Combat Zone are all modelled.
-- **Tactical HUD.** It shows live turn, phase, objective, health, strikes, marks and the recruit (`*`) and attack (`///`) pools. Every value can be adjusted by hand.
+- **Wilds and Objective 3 mechanics.** Attach cards, Guerrilla Camp, `Defensive Position`, `Three Hundred City Blocks` (attached beneath the Final Enemy), boarding `The Choppa!` in the Combat Zone, location hazards and enemy push-through into the Combat Zone are all modelled.
+- **Tactical HUD.** It shows live turn, phase, objective, health, strikes, marks, expected strikes this turn (raw vs. Avoid Strike net), free scans, ready optional card abilities, and the recruit (`*`) and attack (`///`) pools. Every value can be adjusted by hand.
 - **Undo/redo and replayable state.** Every manual move or rule action is a checkpointed `TableState`.
 - **Movement telemetry.** Every move is logged in-game (`L`) and written to `game/logs/movement_log.{jsonl,txt}`.
 - **Card inspect and catalog.** You can open a full-screen 3D card inspect view, search inside a stack, and browse the box catalog to spawn any card.
-- **Automated rules check.** `--verify-mechanics` runs deterministic multiplayer and Attach/Guerrilla Camp scenarios and writes a PASS/FAIL report.
+- **Automated rules check.** `--verify-mechanics` runs deterministic multiplayer, Attach/Guerrilla Camp, playthrough discrepancy (Issues A1–A9) and card-by-card mechanics scenarios, writing a PASS/FAIL report.
 
 ### Card data and print pipeline (`predator/`, `tools/`)
 

@@ -314,9 +314,13 @@ int Table::effectiveEnemyAttack(const Pile& p) const {
         }
     }
 
-    // It Changed Colors (def 111): Ongoing: -2 Attack for each different Class played this turn
+    // It Changed Colors (def 111): Ongoing: -2 Attack for each different Class played/held this turn
     if (defId == 111) {
-        atk = std::max(0, atk - static_cast<int>(state_.playedClasses.size()) * 2);
+        const auto& clsList =
+            (state_.phase == TurnPhase::ActionPhase && !state_.roundHandClasses.empty())
+                ? state_.roundHandClasses
+                : state_.playedClasses;
+        atk = std::max(0, atk - static_cast<int>(clsList.size()) * 2);
     }
 
     // Now It Wants Us (def 119): Wilds: -1 Attack for each space away from Combat Zone
@@ -327,7 +331,7 @@ int Table::effectiveEnemyAttack(const Pile& p) const {
         }
     }
 
-    // Knock Knock (def 9): Enemies in the Combat Zone have -1 Attack this turn
+    // Get to the Choppa! (def 9): Enemies in the Combat Zone have -1 Attack this turn
     if (p.zone == "combat" && state_.combatZoneAttackPenalty > 0 && defId != 114) {
         atk = std::max(0, atk - state_.combatZoneAttackPenalty);
     }
@@ -345,6 +349,12 @@ bool Table::isWildsSpaceClear(int slotIdx) const {
         }
     }
     return true;
+}
+
+bool Table::isWildsSlotSwappable(int slotIdx) const {
+    if (slotIdx < 0 || slotIdx > 4) return false;
+    const Pile* wp = findZonePile("wilds_" + std::to_string(slotIdx));
+    return wp && !wp->cards.empty() && !wp->top().attached;
 }
 
 int Table::countDiscardedEvents() const {
@@ -373,6 +383,173 @@ bool Table::canCompleteObjective2() const {
     if (!isWildsSpaceClear(0)) return false;
     // Need 6 Recruit Points
     return state_.recruitPool >= 6;
+}
+
+Vec2 Table::zoneCenterPos(const std::string& zoneId, Vec2 fallback) const {
+    if (const Pile* zp = findZonePile(zoneId)) return zp->pos;
+    if (const Zone* z = layout_.zone(zoneId)) return z->rect.center();
+    return fallback;
+}
+
+void Table::queueCardFlight(CardInst card, Vec2 fromPos, Vec2 toPos, bool startFaceUp,
+                            bool endFaceUp, int staggerIdx) {
+    const float dx = toPos.x - fromPos.x;
+    const float dy = toPos.y - fromPos.y;
+    if (dx * dx + dy * dy < 4.f && startFaceUp == endFaceUp) return;
+
+    const int idx = (staggerIdx >= 0) ? staggerIdx : (flightBatchCounter_++);
+    FlyingCardAnim anim;
+    anim.card = card;
+    anim.startPos = fromPos;
+    anim.endPos = toPos;
+    anim.delay = 0.06f * static_cast<float>(std::min(idx, 12));
+    anim.elapsed = 0.f;
+    anim.duration = 0.32f;
+    anim.startFaceUp = startFaceUp;
+    anim.endFaceUp = endFaceUp;
+
+    // Replace any existing flight for the same card uid
+    for (auto& ex : flyingCards_) {
+        if (ex.card.uid == card.uid) {
+            ex = anim;
+            return;
+        }
+    }
+    if (flyingCards_.size() >= 64) {
+        flyingCards_.erase(flyingCards_.begin());
+    }
+    flyingCards_.push_back(anim);
+}
+
+bool Table::isCardInFlight(std::uint32_t cardUid) const {
+    for (const auto& anim : flyingCards_) {
+        if (anim.card.uid == cardUid && anim.elapsed < anim.delay + anim.duration) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Table::isCardKilledInPlayed(std::uint32_t cardUid) const {
+    return std::find(state_.killedPlayedUids.begin(), state_.killedPlayedUids.end(), cardUid) !=
+           state_.killedPlayedUids.end();
+}
+
+bool Table::isCardStatsSwapped(std::uint32_t cardUid) const {
+    return std::find(state_.swappedStatUids.begin(), state_.swappedStatUids.end(), cardUid) !=
+           state_.swappedStatUids.end();
+}
+
+void Table::effectiveCardStats(const CardInst& c, int* recruitOut, int* attackOut) const {
+    const CardDef& d = catalog_.card(c.def);
+    int rec = std::max(0, d.recruit);
+    int atk = std::max(0, d.attack);
+    if (isCardStatsSwapped(c.uid)) {
+        std::swap(rec, atk);
+    }
+
+    const int nOtherChars = isBarracksCharacterDef(c.def) ? countOtherBarracksChars(d.subtitle) : 0;
+    const int coordCount = std::max(0, state_.coordinatedCountThisTurn);
+
+    // Passive Brothers in Arms, Call For Backup & [Class] stat scaling
+    if (c.def == 6) {
+        rec += 2 * nOtherChars; // Before Anybody Knows We Were There: 1 -> 3 -> 5 -> 7 *
+    } else if (c.def == 10) {
+        atk += 2 * nOtherChars; // Bad Idea: 1 -> 3 -> 5 -> 7 ///
+    } else if (c.def == 71) {
+        atk += 1 * coordCount;  // Fighting the Good Fight: +1 /// per Coordinate
+    } else if (c.def == 73) {
+        rec += 2 * coordCount;  // Command Decisions: +2 * per Coordinate
+    } else if (c.def == 91 && countTurnClass("Strength") >= 2) {
+        atk += 2;               // Master of the Hunt: [Strength] +2 ///
+    } else if (c.def == 93 && countTurnClass("Leadership") >= 2) {
+        rec += 2;               // Thrill of the Hunt: [Leadership] +2 *
+    }
+
+    if (recruitOut) *recruitOut = rec;
+    if (attackOut) *attackOut = atk;
+}
+
+std::vector<CardInst> Table::collectActiveTurnCards() const {
+    std::vector<CardInst> out;
+    const std::string handZid = activePlayerZone("hand");
+    const std::string playedZid = activePlayerZone("played");
+
+    std::uint32_t lingeringPrevTurnImmunityUid = 0;
+    if (state_.activePlayer >= 0 &&
+        state_.activePlayer < static_cast<int>(state_.players.size())) {
+        const PlayerState& ps = state_.players[static_cast<size_t>(state_.activePlayer)];
+        if (ps.activeImmunityCardUid != 0 && ps.cannotDieTurnsRemaining == 1) {
+            lingeringPrevTurnImmunityUid = ps.activeImmunityCardUid;
+        }
+    }
+
+    for (const auto& p : state_.piles) {
+        if (p.zone != handZid && p.zone != playedZid) continue;
+        for (const auto& c : p.cards) {
+            if (lingeringPrevTurnImmunityUid != 0 && c.uid == lingeringPrevTurnImmunityUid) {
+                continue;
+            }
+            out.push_back(c);
+        }
+    }
+    for (const auto& cc : state_.coordinatedCards) {
+        out.push_back(cc);
+    }
+    return out;
+}
+
+int Table::countTurnClass(std::string_view classType) const {
+    if (classType.empty()) return 0;
+    int count = 0;
+    for (const auto& c : collectActiveTurnCards()) {
+        if (catalog_.card(c.def).classType == classType) ++count;
+    }
+    return count;
+}
+
+int Table::countTurnTeam(std::string_view teamName) const {
+    if (teamName.empty()) return 0;
+    int count = 0;
+    for (const auto& c : collectActiveTurnCards()) {
+        if (catalog_.card(c.def).team == teamName) ++count;
+    }
+    return count;
+}
+
+int Table::countOtherBarracksChars(std::string_view mySubtitle) const {
+    std::vector<std::string> distinctOthers;
+    for (const auto& c : collectActiveTurnCards()) {
+        if (!isBarracksCharacterDef(c.def)) continue;
+        const std::string& sub = catalog_.card(c.def).subtitle;
+        if (sub.empty() || sub == mySubtitle) continue;
+        if (!containsStr(distinctOthers, sub)) {
+            distinctOthers.push_back(sub);
+        }
+    }
+    return static_cast<int>(distinctOthers.size());
+}
+
+int Table::expectedStrikesThisTurn(int* rawStrikesOut, int* avoidOut) const {
+    int raw = 0;
+    if (state_.marksCount > 0) {
+        for (int s = 0; s <= 4; ++s) {
+            if (const Pile* wp = findZonePile("wilds_" + std::to_string(s));
+                wp && !wp->cards.empty() && wp->top().faceUp && wp->top().def == 108) {
+                raw += 1;
+            }
+        }
+    }
+    for (const auto& p : state_.piles) {
+        if (p.zone == "combat" && !p.cards.empty() && p.top().faceUp && p.top().def != 114) {
+            const CardDef& d = catalog_.card(p.top().def);
+            raw += hasKeyword(d, "Double Strike") ? 2 : 1;
+        }
+    }
+    const int avoid = std::max(0, state_.avoidStrikesAvailable);
+    if (rawStrikesOut) *rawStrikesOut = raw;
+    if (avoidOut) *avoidOut = avoid;
+    return std::max(0, raw - avoid);
 }
 
 void Table::checkpoint() {
@@ -732,9 +909,25 @@ void Table::reflowZone(const std::string& zoneId) {
         }
     }
 
+    std::uint32_t immunityUid = 0;
+    if (parsed && role == "played" && pIdx >= 0 &&
+        pIdx < static_cast<int>(state_.players.size())) {
+        immunityUid = state_.players[static_cast<size_t>(pIdx)].activeImmunityCardUid;
+    }
+
     std::vector<Pile*> zPiles;
     for (auto& p : state_.piles) {
-        if (p.zone == zoneId && !p.cards.empty()) zPiles.push_back(&p);
+        if (p.zone != zoneId || p.cards.empty()) continue;
+        if (immunityUid != 0 && p.top().uid == immunityUid) {
+            const Zone* avZ = layout_.zone(playerZoneId(pIdx, "avatar"));
+            const Vec2 avPos = avZ ? avZ->rect.center() : Vec2{140.f, y};
+            p.pos = avPos + Vec2{46.f, -18.f};
+            p.quarterTurns = 0;
+            p.cards.back().faceUp = true;
+            p.label = "IMMUNE";
+            continue;
+        }
+        zPiles.push_back(&p);
     }
     std::sort(zPiles.begin(), zPiles.end(),
               [](const Pile* a, const Pile* b) { return a->pos.x < b->pos.x; });
@@ -826,7 +1019,7 @@ void Table::syncStateFromZones(std::string* deltaOut) {
             for (const auto& c : sp->cards) {
                 const CardDef& d = catalog_.card(c.def);
                 if (c.def == 184) continue; // Close Call = 0 dmg
-                const int dmg = (d.attack > 0) ? d.attack : 1;
+                const int dmg = (d.attack >= 0) ? d.attack : 1;
                 zoneStrikeDmg += dmg;
             }
         }
@@ -853,19 +1046,16 @@ void Table::syncStateFromZones(std::string* deltaOut) {
         state_.cannotDieTurnsRemaining = ap.cannotDieTurnsRemaining;
     }
 
-    // 2. Sync Active Player's Played / Active Area (credit newly dropped cards, un-credit removed cards)
+    // 2. Sync Active Player's Turn Cards (Hand + Played Area + Coordinated virtual copies)
     const std::string activePlayedZid = activePlayerZone("played");
-    const std::string activeHandZid = activePlayerZone("hand");
+    const std::vector<CardInst> turnCards = collectActiveTurnCards();
 
-    std::vector<CardInst> currentPlayed;
-    state_.playedClasses.clear();
-    state_.playedTeams.clear();
-    state_.playedCharacters.clear();
-
+    state_.playedClasses = state_.coordinatedClasses;
+    state_.playedTeams = state_.coordinatedTeams;
+    state_.playedCharacters = state_.coordinatedCharacters;
     for (const auto& p : state_.piles) {
         if (p.zone != activePlayedZid) continue;
         for (const auto& c : p.cards) {
-            currentPlayed.push_back(c);
             const CardDef& d = catalog_.card(c.def);
             if (!d.classType.empty() && !containsStr(state_.playedClasses, d.classType)) {
                 state_.playedClasses.push_back(d.classType);
@@ -877,39 +1067,131 @@ void Table::syncStateFromZones(std::string* deltaOut) {
                 !containsStr(state_.playedCharacters, d.subtitle)) {
                 state_.playedCharacters.push_back(d.subtitle);
             }
+        }
+    }
 
-            if (std::find(state_.accountedPlayedUids.begin(), state_.accountedPlayedUids.end(),
-                          c.uid) == state_.accountedPlayedUids.end()) {
-                state_.accountedPlayedUids.push_back(c.uid);
-                state_.recruitPool += std::max(0, d.recruit);
-                state_.attackPool += std::max(0, d.attack);
+    state_.roundHandClasses.clear();
+    state_.roundHandTeams.clear();
+    for (const auto& c : turnCards) {
+        const CardDef& d = catalog_.card(c.def);
+        if (!d.classType.empty() && !containsStr(state_.roundHandClasses, d.classType)) {
+            state_.roundHandClasses.push_back(d.classType);
+        }
+        if (!d.team.empty() && !containsStr(state_.roundHandTeams, d.team)) {
+            state_.roundHandTeams.push_back(d.team);
+        }
+        if (state_.phase == TurnPhase::ActionPhase) {
+            if (!d.classType.empty() && !containsStr(state_.playedClasses, d.classType)) {
+                state_.playedClasses.push_back(d.classType);
+            }
+            if (!d.team.empty() && !containsStr(state_.playedTeams, d.team)) {
+                state_.playedTeams.push_back(d.team);
+            }
+            if (isBarracksCharacterDef(c.def) && !d.subtitle.empty() &&
+                !containsStr(state_.playedCharacters, d.subtitle)) {
+                state_.playedCharacters.push_back(d.subtitle);
             }
         }
     }
 
-    // If a card was dragged OUT of active player's played area back to their Hand, refund its base stats
-    for (auto it = state_.accountedPlayedUids.begin(); it != state_.accountedPlayedUids.end();) {
-        const std::uint32_t uid = *it;
-        const bool stillInPlayed = std::any_of(
-            currentPlayed.begin(), currentPlayed.end(),
-            [uid](const CardInst& c) { return c.uid == uid; });
-        if (!stillInPlayed) {
-            for (const auto& p : state_.piles) {
-                if (p.zone == activeHandZid) {
-                    for (const auto& c : p.cards) {
-                        if (c.uid == uid) {
-                            const CardDef& d = catalog_.card(c.def);
-                            state_.recruitPool =
-                                std::max(0, state_.recruitPool - std::max(0, d.recruit));
-                            state_.attackPool =
-                                std::max(0, state_.attackPool - std::max(0, d.attack));
-                        }
-                    }
-                }
+    // In ActionPhase, all cards in Hand + Played Area + Coordinated virtual copies automatically
+    // contribute their Recruit, Attack, and passive turn modifiers!
+    if (state_.phase == TurnPhase::ActionPhase) {
+        for (const auto& c : turnCards) {
+            const CardDef& d = catalog_.card(c.def);
+            int effRec = 0;
+            int effAtk = 0;
+            effectiveCardStats(c, &effRec, &effAtk);
+
+            const int nOtherChars =
+                isBarracksCharacterDef(c.def) ? countOtherBarracksChars(d.subtitle) : 0;
+            const int coordCount = std::max(0, state_.coordinatedCountThisTurn);
+
+            // Passive turn modifiers
+            int effAvoid = 0;
+            if (c.def == 4 && countTurnClass("Survival") >= 2) {
+                effAvoid = 1;              // Real Nasty Habit: [Survival] Avoid 1 Strike
+            } else if (c.def == 65) {
+                effAvoid = coordCount;     // In the Shadows: Call For Backup Avoid 1 Strike per Coordinate
             }
-            it = state_.accountedPlayedUids.erase(it);
-        } else {
-            ++it;
+
+            int effFreeScan = 0;
+            if (c.def == 2) {
+                effFreeScan = nOtherChars; // Dug In Like An Alabama Tick: Brothers in Arms Free Scan (0..3)
+            } else if (c.def == 67) {
+                effFreeScan = coordCount;  // On the Case: Call For Backup Free Scan per Coordinate
+            } else if (c.def == 85 && countTurnClass("Intel") >= 2) {
+                effFreeScan = 1;           // Stalking the Prey: [Intel] Free Scan
+            }
+
+            const int effCombatPen = (c.def == 9) ? 1 : 0; // Get to the Choppa!: -1 Attack to Combat Zone Enemies
+            const int effDrawKill = (c.def == 15) ? 1 : 0; // Contained Anomaly: Draw 1 card per Enemy killed
+
+            const int prevR = state_.accountedCardRecruit[c.uid];
+            const int prevA = state_.accountedCardAttack[c.uid];
+            const int prevAv = state_.accountedCardAvoid[c.uid];
+            const int prevFs = state_.accountedCardFreeScan[c.uid];
+            const int prevCp = state_.accountedCardCombatPenalty[c.uid];
+            const int prevDk = state_.accountedCardDrawOnKill[c.uid];
+
+            state_.recruitPool = std::max(0, state_.recruitPool + (effRec - prevR));
+            state_.attackPool = std::max(0, state_.attackPool + (effAtk - prevA));
+            state_.avoidStrikesAvailable =
+                std::max(0, state_.avoidStrikesAvailable + (effAvoid - prevAv));
+            state_.freeScansAvailable =
+                std::max(0, state_.freeScansAvailable + (effFreeScan - prevFs));
+            state_.combatZoneAttackPenalty =
+                std::max(0, state_.combatZoneAttackPenalty + (effCombatPen - prevCp));
+            state_.drawCardsOnKill =
+                std::max(0, state_.drawCardsOnKill + (effDrawKill - prevDk));
+
+            state_.accountedCardRecruit[c.uid] = effRec;
+            state_.accountedCardAttack[c.uid] = effAtk;
+            state_.accountedCardAvoid[c.uid] = effAvoid;
+            state_.accountedCardFreeScan[c.uid] = effFreeScan;
+            state_.accountedCardCombatPenalty[c.uid] = effCombatPen;
+            state_.accountedCardDrawOnKill[c.uid] = effDrawKill;
+
+            if (std::find(state_.accountedPlayedUids.begin(), state_.accountedPlayedUids.end(),
+                          c.uid) == state_.accountedPlayedUids.end()) {
+                state_.accountedPlayedUids.push_back(c.uid);
+            }
+        }
+
+        // Un-credit any card removed from Hand/Played (e.g. discarded from hand) unless locked
+        for (auto it = state_.accountedPlayedUids.begin();
+             it != state_.accountedPlayedUids.end();) {
+            const std::uint32_t uid = *it;
+            const bool inTurn = std::any_of(
+                turnCards.begin(), turnCards.end(),
+                [uid](const CardInst& c) { return c.uid == uid; });
+            const bool isLocked =
+                std::find(state_.lockedAccountedUids.begin(), state_.lockedAccountedUids.end(),
+                          uid) != state_.lockedAccountedUids.end();
+            if (!inTurn && !isLocked) {
+                state_.recruitPool =
+                    std::max(0, state_.recruitPool - state_.accountedCardRecruit[uid]);
+                state_.attackPool =
+                    std::max(0, state_.attackPool - state_.accountedCardAttack[uid]);
+                state_.avoidStrikesAvailable =
+                    std::max(0, state_.avoidStrikesAvailable - state_.accountedCardAvoid[uid]);
+                state_.freeScansAvailable =
+                    std::max(0, state_.freeScansAvailable - state_.accountedCardFreeScan[uid]);
+                state_.combatZoneAttackPenalty = std::max(
+                    0, state_.combatZoneAttackPenalty - state_.accountedCardCombatPenalty[uid]);
+                state_.drawCardsOnKill =
+                    std::max(0, state_.drawCardsOnKill - state_.accountedCardDrawOnKill[uid]);
+
+                state_.accountedCardRecruit.erase(uid);
+                state_.accountedCardAttack.erase(uid);
+                state_.accountedCardAvoid.erase(uid);
+                state_.accountedCardFreeScan.erase(uid);
+                state_.accountedCardCombatPenalty.erase(uid);
+                state_.accountedCardDrawOnKill.erase(uid);
+                it = state_.accountedPlayedUids.erase(it);
+            } else {
+                ++it;
+            }
         }
     }
 
@@ -957,6 +1239,19 @@ void Table::applyDropWithLog(PileId draggedId, const DropTarget& t,
     std::string delta;
     syncStateFromZones(&delta);
     refillHQ();
+
+    // If a Strike card was manually dropped onto a player's Strikes zone and their HP dropped to <= 0, eliminate them
+    int dstP = -1;
+    std::string_view dstRole;
+    if (parsePlayerZone(dstZone, dstP, dstRole) && dstRole == "strikes" &&
+        dstP >= 0 && dstP < static_cast<int>(state_.players.size())) {
+        const PlayerState& ps = state_.players[static_cast<size_t>(dstP)];
+        if (ps.alive && ps.strikeDamage >= ps.health && ps.cannotDieTurnsRemaining <= 0) {
+            eliminatePlayer(dstP, delta);
+            syncStateFromZones();
+            state_.lastActionLog = delta;
+        }
+    }
 
     int destStackCount = cardCount;
     bool faceUp = true;
@@ -1034,6 +1329,19 @@ void Table::applyMultiDrop(const std::vector<PileId>& draggedPiles,
     syncStateFromZones(&delta);
     refillHQ();
 
+    // If a Strike card was manually dropped onto a player's Strikes zone and their HP dropped to <= 0, eliminate them
+    int dstP = -1;
+    std::string_view dstRole;
+    if (parsePlayerZone(dstZone, dstP, dstRole) && dstRole == "strikes" &&
+        dstP >= 0 && dstP < static_cast<int>(state_.players.size())) {
+        const PlayerState& ps = state_.players[static_cast<size_t>(dstP)];
+        if (ps.alive && ps.strikeDamage >= ps.health && ps.cannotDieTurnsRemaining <= 0) {
+            eliminatePlayer(dstP, delta);
+            syncStateFromZones();
+            state_.lastActionLog = delta;
+        }
+    }
+
     int destStackCount = totalCards;
     bool faceUp = true;
     if (!dstZone.empty()) {
@@ -1102,8 +1410,9 @@ void Table::refillHQ() {
             np.cards = {c};
             state_.piles.push_back(std::move(np));
             PileVisual& pv = visual(state_.piles.back().id);
-            pv.pos = barracksPos;
+            pv.pos = pos;
             pv.flipT = 0.f;
+            queueCardFlight(c, barracksPos, pos, false, true);
         }
     }
 }
@@ -1169,15 +1478,65 @@ void Table::revealAndAttachGuerrillaCamp(CardInst camp, std::string& logOut) {
     }
 }
 
+void Table::revealThreeHundredCityBlocks(CardInst card115, std::uint32_t seed,
+                                         std::string& logOut) {
+    // Three Hundred City Blocks (id 115):
+    // "Reveal: Attach this to the Final Enemy. If you can't, add an Enemy card to the Wilds, then shuffle this into the Enemy deck."
+    Pile* finalEnemyPile = nullptr;
+    for (auto& p : state_.piles) {
+        if ((p.zone == "combat" || wildsIndexFromZone(p.zone) >= 0) && !p.cards.empty() &&
+            p.top().faceUp && p.top().def == 121) {
+            finalEnemyPile = &p;
+            break;
+        }
+    }
+
+    if (finalEnemyPile) {
+        card115.faceUp = true;
+        card115.attached = true;
+        finalEnemyPile->cards.insert(finalEnemyPile->cards.begin(), card115);
+        state_.threeHundredCityBlocksAttachedToFinalEnemy = true;
+        visual(finalEnemyPile->id).flipT = 0.f;
+        logOut +=
+            " [Reveal — Three Hundred City Blocks: Attached to Final Enemy (One Ugly Mother...)!]";
+        return;
+    }
+
+    // Final Enemy not face-up on board -> add an Enemy card to the Wilds, then shuffle 115 into the Enemy deck
+    Pile* prey = findZonePile("prey");
+    if (prey && !prey->cards.empty()) {
+        const Vec2 preyPos = prey->pos;
+        CardInst drawnEnemy = prey->cards.back();
+        prey->cards.pop_back();
+        drawnEnemy.faceUp = false;
+        drawnEnemy.attached = false;
+        logOut += " [Reveal — Three Hundred City Blocks: Final Enemy not in play -> added 1 Enemy to The Wilds!]";
+        queueCardFlight(drawnEnemy, preyPos, zoneCenterPos("wilds_4", {1400.f, 234.f}), false,
+                        false);
+        pushCardIntoWildsSlot(4, drawnEnemy, seed + 19u, logOut);
+    }
+
+    card115.faceUp = false;
+    card115.attached = false;
+    Pile& preyDeck = ensureZonePile("prey", {1620.f, 220.f}, "");
+    preyDeck.cards.push_back(card115);
+    shuffle(preyDeck.id, seed + 83u);
+    queueCardFlight(card115, zoneCenterPos("wilds_0", {566.f, 234.f}), preyDeck.pos, true, false);
+    logOut += " [Shuffled Three Hundred City Blocks back into the Enemy Deck!]";
+}
+
 void Table::moveCardToCombatZone(CardInst card, std::uint32_t seed, std::string& logOut) {
+    const bool wasFaceUp = card.faceUp;
     card.faceUp = true;
     const CardDef& d = catalog_.card(card.def);
+    const Vec2 hillsPos = zoneCenterPos("wilds_0", {566.f, 234.f});
 
     // If an Event or Hazard is pushed into the Combat Zone, it resolves its effect immediately
     if (isEventDef(card.def)) {
         card.attached = false;
         Pile& disc = ensureZonePile("discard_hazards", {2150.f, 545.f}, "Discarded Hazards/Events");
         disc.cards.push_back(card);
+        queueCardFlight(card, hillsPos, disc.pos, wasFaceUp, true);
         logOut += " [Event revealed in Combat Zone -> " + d.name + "]";
         resolveObjectiveEvent(seed, logOut);
         return;
@@ -1199,6 +1558,7 @@ void Table::moveCardToCombatZone(CardInst card, std::uint32_t seed, std::string&
             Pile& disc =
                 ensureZonePile("discard_hazards", {2150.f, 545.f}, "Discarded Hazards/Events");
             disc.cards.push_back(card);
+            queueCardFlight(card, hillsPos, disc.pos, true, true);
             if (state_.currentObjective == 1) {
                 advanceObjectiveStack();
                 logOut += " [Guerrilla Camp entered Combat Zone -> Discarded Events & OBJECTIVE 1 COMPLETE!]";
@@ -1213,7 +1573,13 @@ void Table::moveCardToCombatZone(CardInst card, std::uint32_t seed, std::string&
         card.attached = false;
         Pile& ops = ensureZonePile("testing", {1300.f, 548.f}, "Operations");
         ops.cards.push_back(card);
+        queueCardFlight(card, hillsPos, ops.pos, wasFaceUp, true);
         logOut += " [Defensive Position moved to Operations!]";
+        return;
+    }
+    if (card.def == 115) {
+        card.attached = false;
+        revealThreeHundredCityBlocks(card, seed, logOut);
         return;
     }
 
@@ -1240,9 +1606,15 @@ void Table::moveCardToCombatZone(CardInst card, std::uint32_t seed, std::string&
     np.id = state_.nextPileId++;
     np.pos = {startX, baseY};
     np.zone = "combat";
-    np.cards = {card};
+    if (card.def == 121 && state_.threeHundredCityBlocksAttachedToFinalEnemy) {
+        CardInst att115{state_.nextUid++, 115, true, true};
+        np.cards = {att115, card};
+    } else {
+        np.cards = {card};
+    }
     state_.piles.push_back(std::move(np));
     visual(state_.piles.back().id).flipT = 0.f;
+    queueCardFlight(card, hillsPos, {startX, baseY}, wasFaceUp, true);
 
     logOut += " [" + d.name + " entered the Combat Zone!]";
 }
@@ -1256,6 +1628,11 @@ void Table::pushCardIntoWildsSlot(int slotIdx, CardInst card, std::uint32_t seed
 
     card.attached = false;
     const std::string zid = "wilds_" + std::to_string(slotIdx);
+    const Vec2 dstPos = zoneCenterPos(
+        zid, {461.f + static_cast<float>(slotIdx) * 210.f + 105.f, 234.f});
+    const Vec2 srcPos =
+        (slotIdx < 4) ? zoneCenterPos("wilds_" + std::to_string(slotIdx + 1), dstPos + Vec2{210.f, 0.f})
+                      : zoneCenterPos("prey", {1620.f, 220.f});
 
     // Attached cards are immune to regular Wilds movement: only push an unattached top card!
     if (Pile* existing = findZonePile(zid);
@@ -1279,18 +1656,16 @@ void Table::pushCardIntoWildsSlot(int slotIdx, CardInst card, std::uint32_t seed
         landedPileId = target->id;
         (void)visual(landedPileId);
     } else {
-        Vec2 pos{461.f + static_cast<float>(slotIdx) * 210.f + 105.f, 234.f};
-        if (const Zone* z = layout_.zone(zid)) pos = z->rect.center();
-
         Pile np;
         np.id = state_.nextPileId++;
-        np.pos = pos;
+        np.pos = dstPos;
         np.zone = zid;
         np.cards = {card};
         state_.piles.push_back(std::move(np));
         landedPileId = state_.piles.back().id;
         (void)visual(landedPileId);
     }
+    queueCardFlight(card, srcPos, dstPos, card.faceUp, card.faceUp);
 
     // Objective 2 attached Defensive Position on Hills automatically scans hidden cards entering Hills
     bool hasDefPosOnHills = state_.defensivePositionAttachedToHills;
@@ -1326,6 +1701,7 @@ void Table::resolveObjectiveEvent(std::uint32_t seed, std::string& logOut) {
                 if (wp->cards[ci].def == 102 && wp->cards[ci].faceUp) {
                     foundCamp = true;
                     if (s < 4) {
+                        const Vec2 fromPos = wp->pos;
                         CardInst camp = wp->cards[ci];
                         wp->cards.erase(wp->cards.begin() + static_cast<std::ptrdiff_t>(ci));
                         if (wp->cards.empty()) {
@@ -1336,6 +1712,9 @@ void Table::resolveObjectiveEvent(std::uint32_t seed, std::string& logOut) {
                             }
                         }
                         attachCardToWildsSlot(s + 1, camp);
+                        queueCardFlight(camp, fromPos,
+                                        zoneCenterPos("wilds_" + std::to_string(s + 1)), true,
+                                        true);
                         logOut += " [Event: Guerrilla Camp moved right from " +
                                   std::string(wildsName(s)) + " to " +
                                   std::string(wildsName(s + 1)) + "!]";
@@ -1354,12 +1733,14 @@ void Table::resolveObjectiveEvent(std::uint32_t seed, std::string& logOut) {
     } else if (state_.currentObjective == 2) {
         // Objective 2 Event: "Right Out From Under Our Noses" — Top Enemy card into Hills face-down
         if (Pile* prey = findZonePile("prey"); prey && !prey->cards.empty()) {
+            const Vec2 preyPos = prey->pos;
             CardInst c = prey->cards.back();
             prey->cards.pop_back();
             c.faceUp = false;
             c.attached = false;
             logOut += " [Event: Enemy ambushed into Hills face-down!]";
             pushCardIntoWildsSlot(0, c, seed, logOut);
+            queueCardFlight(c, preyPos, zoneCenterPos("wilds_0"), false, false);
         }
     } else {
         // Objective 3 Event: "El Cazador Trofeo de los Hombres" — Draw a Strike for each Mark
@@ -1384,6 +1765,7 @@ void Table::resolveLocationHazard(CardInst hazardCard, std::uint32_t seed, std::
     const std::string marksZid = activePlayerZone("marks");
     Pile& marks = ensureZonePile(marksZid, {140.f, layout_.boardSize.y + 440.f}, "Marks");
     marks.cards.push_back(hazardCard);
+    queueCardFlight(hazardCard, zoneCenterPos("wilds_0", {566.f, 234.f}), marks.pos, true, true);
     syncStateFromZones();
 
     logOut += " [HAZARD! Player " + std::to_string(state_.activePlayer + 1) + " Marked (" +
@@ -1420,6 +1802,7 @@ void Table::onCardRevealedInWilds(PileId wildsPileId, int slotIdx, std::uint32_t
     Pile* wp = find(wildsPileId);
     if (!wp || wp->cards.empty()) return;
 
+    const Vec2 wildsPos = wp->pos;
     const CardInst revealed = wp->top();
     const CardDef& d = catalog_.card(revealed.def);
 
@@ -1443,6 +1826,7 @@ void Table::onCardRevealedInWilds(PileId wildsPileId, int slotIdx, std::uint32_t
         ev.attached = false;
         Pile& disc = ensureZonePile("discard_hazards", {2150.f, 545.f}, "Discarded Hazards/Events");
         disc.cards.push_back(ev);
+        queueCardFlight(ev, wildsPos, disc.pos, true, true);
         logOut += " Revealed EVENT!";
         resolveObjectiveEvent(seed, logOut);
         return;
@@ -1468,6 +1852,7 @@ void Table::onCardRevealedInWilds(PileId wildsPileId, int slotIdx, std::uint32_t
         dp.attached = false;
         Pile& ops = ensureZonePile("testing", {1300.f, 548.f}, "Operations");
         ops.cards.push_back(dp);
+        queueCardFlight(dp, wildsPos, ops.pos, true, true);
         logOut += " Revealed Defensive Position -> moved to Operations!";
         return;
     }
@@ -1476,6 +1861,13 @@ void Table::onCardRevealedInWilds(PileId wildsPileId, int slotIdx, std::uint32_t
     if (revealed.def == 114) {
         popWildsTopCard();
         moveCardToCombatZone(revealed, seed, logOut);
+        return;
+    }
+
+    // Act 3 Special: Three Hundred City Blocks (def 115)
+    if (revealed.def == 115) {
+        popWildsTopCard();
+        revealThreeHundredCityBlocks(revealed, seed, logOut);
         return;
     }
 
@@ -1493,44 +1885,71 @@ void Table::onCardRevealedInWilds(PileId wildsPileId, int slotIdx, std::uint32_t
     // Like a Hunter (def 109): Reveal: Each Marked player reveals top 3 of deck and discards cost 1+
     if (revealed.def == 109) {
         syncStateFromZones();
+        state_.likeAHunterRevealed.clear();
         for (int pIdx = 0; pIdx < state_.playerCount; ++pIdx) {
             if (pIdx >= static_cast<int>(state_.players.size())) break;
             if (!state_.players[static_cast<size_t>(pIdx)].alive ||
+                state_.players[static_cast<size_t>(pIdx)].escapedInChoppa ||
                 state_.players[static_cast<size_t>(pIdx)].marksCount <= 0) {
                 continue;
             }
             const std::string deckZid = playerZone(pIdx, "deck");
             const std::string discZid = playerZone(pIdx, "discard");
-            if (Pile* pDeck = findZonePile(deckZid)) {
-                int discarded = 0;
-                std::vector<CardInst> kept;
-                for (int i = 0; i < 3 && !pDeck->cards.empty(); ++i) {
-                    CardInst top = pDeck->cards.back();
-                    pDeck->cards.pop_back();
-                    if (catalog_.card(top.def).cost >= 1) {
-                        top.faceUp = true;
-                        Pile& pDisc = ensureZonePile(discZid, {530.f, 1367.f}, "");
-                        pDisc.cards.push_back(top);
-                        pDeck = findZonePile(deckZid);
-                        ++discarded;
-                    } else {
-                        kept.push_back(top);
+            const Vec2 deckPos = zoneCenterPos(deckZid, {2002.f, 1367.f});
+            const Vec2 discPos = zoneCenterPos(discZid, {2207.f, 1367.f});
+
+            int discarded = 0;
+            std::vector<CardInst> kept;
+            std::mt19937 rng(seed + static_cast<std::uint32_t>(pIdx * 37));
+
+            for (int i = 0; i < 3; ++i) {
+                Pile* pDeck = findZonePile(deckZid);
+                if (!pDeck || pDeck->cards.empty()) {
+                    Pile* pDisc = findZonePile(discZid);
+                    if (!pDisc || pDisc->cards.empty()) break;
+                    std::vector<CardInst> recycled = std::move(pDisc->cards);
+                    pDisc->cards.clear();
+                    for (auto& c : recycled) {
+                        c.faceUp = false;
+                        c.attached = false;
                     }
-                    if (!pDeck) break;
+                    std::shuffle(recycled.begin(), recycled.end(), rng);
+                    Pile& newDeck = ensureZonePile(deckZid, deckPos, "");
+                    newDeck.cards = std::move(recycled);
+                    pDeck = &newDeck;
                 }
-                if (Pile* curDeck = findZonePile(deckZid); curDeck && !kept.empty()) {
-                    for (auto it = kept.rbegin(); it != kept.rend(); ++it) {
-                        curDeck->cards.push_back(*it);
-                    }
-                } else if (!kept.empty()) {
-                    Pile& newDeck = ensureZonePile(deckZid, {530.f, 1367.f}, "");
-                    for (auto it = kept.rbegin(); it != kept.rend(); ++it) {
-                        newDeck.cards.push_back(*it);
-                    }
+                if (!pDeck || pDeck->cards.empty()) break;
+
+                CardInst top = pDeck->cards.back();
+                pDeck->cards.pop_back();
+                const int cCost = std::max(0, catalog_.card(top.def).cost);
+                const bool shouldDiscard = (cCost >= 1);
+
+                state_.likeAHunterRevealed.push_back(
+                    RevealedDeckCardEntry{pIdx, top, cCost, shouldDiscard});
+
+                if (shouldDiscard) {
+                    top.faceUp = true;
+                    Pile& pDisc = ensureZonePile(discZid, discPos, "");
+                    pDisc.cards.push_back(top);
+                    queueCardFlight(top, deckPos, discPos, false, true);
+                    ++discarded;
+                } else {
+                    kept.push_back(top);
                 }
-                logOut += " [Like a Hunter: P" + std::to_string(pIdx + 1) + " discarded " +
-                          std::to_string(discarded) + " cost 1+ card(s)!]";
             }
+            if (!kept.empty()) {
+                Pile& curDeck = ensureZonePile(deckZid, deckPos, "");
+                for (auto it = kept.rbegin(); it != kept.rend(); ++it) {
+                    curDeck.cards.push_back(*it);
+                }
+            }
+            logOut += " [Like a Hunter: P" + std::to_string(pIdx + 1) +
+                      " revealed top 3 cards -> discarded " + std::to_string(discarded) +
+                      " cost 1+ card(s)!]";
+        }
+        if (!state_.likeAHunterRevealed.empty()) {
+            state_.pendingLikeAHunterModal = true;
         }
     }
 
@@ -1544,12 +1963,64 @@ std::string Table::resolveEnemyPhase(std::uint32_t seed) {
 
     std::string log;
 
+    // Issue A6 — Festering Wound (def 193): "At the start of your next turn, discard this and draw two Strikes."
+    const std::string apStrikeZid = activePlayerZone("strikes");
+    if (Pile* sw = findZonePile(apStrikeZid); sw && !sw->cards.empty()) {
+        const Vec2 swPos = sw->pos;
+        int festeringCount = 0;
+        for (auto it = sw->cards.begin(); it != sw->cards.end();) {
+            if (it->def == 193) {
+                CardInst fw = *it;
+                fw.faceUp = true;
+                fw.attached = false;
+                it = sw->cards.erase(it);
+                Pile& discStrikes = ensureZonePile("discard_strikes", {1846.f, 547.f}, "");
+                discStrikes.cards.push_back(fw);
+                queueCardFlight(fw, swPos, discStrikes.pos, true, true);
+                ++festeringCount;
+            } else {
+                ++it;
+            }
+        }
+        if (sw->cards.empty()) {
+            const int idx = indexOf(sw->id);
+            if (idx >= 0) {
+                visuals_.erase(sw->id);
+                state_.piles.erase(state_.piles.begin() + idx);
+            }
+        }
+        if (festeringCount > 0) {
+            syncStateFromZones();
+            for (int f = 0; f < festeringCount; ++f) {
+                log += "[Festering Wound: P" + std::to_string(state_.activePlayer + 1) +
+                       " discarded Festering Wound -> draws 2 Strikes!] ";
+                drawStrikeAgainstPlayer(state_.activePlayer,
+                                        seed + static_cast<std::uint32_t>(f * 29 + 3), log);
+                if (state_.phase == TurnPhase::Defeat ||
+                    !state_.players[static_cast<size_t>(state_.activePlayer)].alive) {
+                    break;
+                }
+                drawStrikeAgainstPlayer(state_.activePlayer,
+                                        seed + static_cast<std::uint32_t>(f * 29 + 11), log);
+                if (state_.phase == TurnPhase::Defeat ||
+                    !state_.players[static_cast<size_t>(state_.activePlayer)].alive) {
+                    break;
+                }
+            }
+            if (state_.phase == TurnPhase::Defeat) {
+                state_.lastActionLog = log;
+                return log;
+            }
+        }
+    }
+
     // Official Rulebook p.6: In a 5-player game, Round 1 (first 5 turns) skips the Enemy Phase
     if (state_.playerCount == 5 && state_.turnNumber <= 5) {
         state_.phase = TurnPhase::ActionPhase;
-        log = "Turn " + std::to_string(state_.turnNumber) + " (P" +
-              std::to_string(state_.activePlayer + 1) +
-              " — 5P Prep Round): Skipped Enemy Phase -> Action Phase.";
+        syncStateFromZones();
+        log += "Turn " + std::to_string(state_.turnNumber) + " (P" +
+               std::to_string(state_.activePlayer + 1) +
+               " — 5P Prep Round): Skipped Enemy Phase -> Action Phase.";
         state_.lastActionLog = log;
         return log;
     }
@@ -1623,6 +2094,7 @@ std::string Table::resolveEnemyPhase(std::uint32_t seed) {
     }
 
     state_.phase = TurnPhase::ActionPhase;
+    syncStateFromZones();
     state_.lastActionLog = log;
     recordMove("ENEMY_PHASE", catalog_.card(drawn.def).name, 1, "prey", "wilds_4", 1, false, log);
     return log;
@@ -1640,6 +2112,7 @@ void Table::drawPlayerCards(int playerIdx, int count, std::uint32_t seed, std::s
     const Vec2 handPos = hz ? hz->rect.center() : Vec2{1185.f, 1502.f};
 
     std::mt19937 rng(seed);
+    std::vector<std::uint32_t> drawnUids;
 
     for (int i = 0; i < count; ++i) {
         Pile* deck = findZonePile(deckZid);
@@ -1688,10 +2161,20 @@ void Table::drawPlayerCards(int playerIdx, int count, std::uint32_t seed, std::s
         hp.zone = handZid;
         hp.cards = {c};
         state_.piles.push_back(std::move(hp));
-        visual(state_.piles.back().id).pos = deckPos;
+        drawnUids.push_back(c.uid);
     }
 
     reflowZone(handZid);
+    for (std::uint32_t uid : drawnUids) {
+        for (const auto& p : state_.piles) {
+            if (p.zone == handZid && !p.cards.empty() && p.top().uid == uid) {
+                visual(p.id).pos = p.pos;
+                queueCardFlight(p.top(), deckPos, p.pos, false, true);
+                break;
+            }
+        }
+    }
+    syncStateFromZones();
 }
 
 void Table::healPlayerStrikes(int playerIdx, int count, bool leastDamageFirst,
@@ -1700,7 +2183,7 @@ void Table::healPlayerStrikes(int playerIdx, int count, bool leastDamageFirst,
     int targetP = std::clamp(playerIdx, 0, std::max(0, state_.playerCount - 1));
     Pile* wounds = findZonePile(playerZone(targetP, "strikes"));
     if (!wounds || wounds->cards.empty()) {
-        int bestDmg = 0;
+        int bestDmg = -1;
         for (int q = 0; q < state_.playerCount; ++q) {
             if (q < static_cast<int>(state_.players.size()) &&
                 state_.players[static_cast<size_t>(q)].alive) {
@@ -1721,11 +2204,20 @@ void Table::healPlayerStrikes(int playerIdx, int count, bool leastDamageFirst,
         wounds = findZonePile(strikeZid);
         if (!wounds || wounds->cards.empty()) break;
 
+        // Issue A2 — Open Wound (def 194): "Your Strikes other than Open Wounds can't be healed."
+        bool hasOpenWound = false;
+        for (const auto& c : wounds->cards) {
+            if (c.def == 194) {
+                hasOpenWound = true;
+                break;
+            }
+        }
+
         int bestIdx = -1;
         int bestDmg = leastDamageFirst ? 999 : -1;
         for (int i = 0; i < static_cast<int>(wounds->cards.size()); ++i) {
             const int defId = wounds->cards[static_cast<size_t>(i)].def;
-            if (defId == 190) continue; // Permanent Damage (def 190) cannot be healed
+            if (hasOpenWound && defId != 194) continue; // Must heal Open Wound first!
             const int dmg = std::max(0, catalog_.card(defId).attack);
             if ((leastDamageFirst && dmg < bestDmg) || (!leastDamageFirst && dmg > bestDmg)) {
                 bestDmg = dmg;
@@ -1734,6 +2226,7 @@ void Table::healPlayerStrikes(int playerIdx, int count, bool leastDamageFirst,
         }
         if (bestIdx < 0) break;
 
+        const Vec2 fromPos = wounds->pos;
         CardInst healed = wounds->cards[static_cast<size_t>(bestIdx)];
         wounds->cards.erase(wounds->cards.begin() + bestIdx);
         if (wounds->cards.empty()) {
@@ -1746,217 +2239,1290 @@ void Table::healPlayerStrikes(int playerIdx, int count, bool leastDamageFirst,
 
         Pile& discStrikes = ensureZonePile("discard_strikes", {1846.f, 547.f}, "");
         discStrikes.cards.push_back(healed);
+        queueCardFlight(healed, fromPos, discStrikes.pos, true, true);
         logOut += " [Healed P" + std::to_string(targetP + 1) +
                   " Strike: " + catalog_.card(healed.def).name + "!]";
+        syncStateFromZones();
+
+        // Issue A3 — Permanent Damage (def 190, 3 dmg): "When this Strike is healed from you, draw a Strike."
+        if (healed.def == 190) {
+            logOut += " [Permanent Damage healed -> P" + std::to_string(targetP + 1) +
+                      " draws a replacement Strike!]";
+            const std::uint32_t strikeSeed = static_cast<std::uint32_t>(
+                state_.turnNumber * 131 + state_.nextMoveSeq * 17 + n + targetP + 1);
+            drawStrikeAgainstPlayer(targetP, strikeSeed, logOut);
+            if (state_.phase == TurnPhase::Defeat ||
+                !state_.players[static_cast<size_t>(targetP)].alive) {
+                break;
+            }
+        }
     }
 
     syncStateFromZones();
 }
 
-void Table::applyPlayedCardAbility(int defId, bool classAlreadyPlayed, bool teamAlreadyPlayed,
-                                   int otherBarracksChars, std::uint32_t seed,
-                                   std::string& logOut) {
-    const int ap = state_.activePlayer;
+void Table::autoPlayHandCardsForRecruit(int recruitNeeded, std::string& logOut) {
+    if (recruitNeeded <= 0) return;
     const std::string handZid = activePlayerZone("hand");
-    const std::string deckZid = activePlayerZone("deck");
-    const std::string discZid = activePlayerZone("discard");
+    const std::string playedZid = activePlayerZone("played");
 
-    switch (defId) {
-    case 0: // Sexual Tyrannosaurus (Blain): [Strength]: Heal Strike with least damage
-        if (classAlreadyPlayed) {
-            healPlayerStrikes(ap, 1, true, logOut);
+    int unplayedHandRecruit = 0;
+    struct HandCand {
+        PileId pileId;
+        CardInst card;
+        int effRec;
+        bool isStarter;
+    };
+    std::vector<HandCand> cands;
+    for (const auto& p : state_.piles) {
+        if (p.zone != handZid || p.cards.empty()) continue;
+        const CardInst c = p.top();
+        int effRec = 0;
+        if (auto it = state_.accountedCardRecruit.find(c.uid); it != state_.accountedCardRecruit.end()) {
+            effRec = it->second;
+        } else {
+            int r = 0, a = 0;
+            effectiveCardStats(c, &r, &a);
+            effRec = r;
         }
-        break;
-    case 1: // Ol' Painless Is Waiting (Blain): [Leadership]: Draw 2 cards
-        if (classAlreadyPlayed) {
-            drawPlayerCards(ap, 2, seed, logOut);
-            logOut += " [Leadership: Drew 2 cards!]";
+        if (effRec > 0) {
+            unplayedHandRecruit += effRec;
+            cands.push_back({p.id, c, effRec, c.def == 225});
         }
-        break;
-    case 2: // Dug In Like An Alabama Tick (Blain): Brothers in Arms: Scan any space
-        if (otherBarracksChars > 0) {
-            state_.freeScansAvailable += otherBarracksChars;
-            logOut += " [Brothers in Arms: +" + std::to_string(otherBarracksChars) + " Free Scan!]";
+    }
+
+    const int alreadyPlayedUnspent = std::max(0, state_.recruitPool - unplayedHandRecruit);
+    int needFromHand = recruitNeeded - alreadyPlayedUnspent;
+    if (needFromHand <= 0 || cands.empty()) return;
+
+    // Prioritize Starter cards (Experience id 225) first, then lowest Recruit value
+    std::sort(cands.begin(), cands.end(), [](const HandCand& a, const HandCand& b) {
+        if (a.isStarter != b.isStarter) return a.isStarter > b.isStarter;
+        if (a.effRec != b.effRec) return a.effRec < b.effRec;
+        return a.card.uid < b.card.uid;
+    });
+
+    bool movedAny = false;
+    for (const auto& hc : cands) {
+        if (needFromHand <= 0) break;
+        if (Pile* hp = find(hc.pileId)) {
+            const Vec2 fromPos = hp->pos;
+            hp->zone = playedZid;
+            needFromHand -= hc.effRec;
+            movedAny = true;
+            reflowZone(playedZid);
+            if (const Pile* afterP = find(hc.pileId)) {
+                queueCardFlight(hc.card, fromPos, afterP->pos, true, true);
+            }
+            const CardDef& cd = catalog_.card(hc.card.def);
+            logOut += " [Auto-played " + (cd.title.empty() ? cd.name : cd.title) + " (" +
+                      std::to_string(hc.effRec) + " *)]";
         }
+    }
+    if (movedAny) {
+        reflowZone(handZid);
+        reflowZone(playedZid);
+        syncStateFromZones();
+    }
+}
+
+void Table::autoPlayHandCardsForAttack(int attackNeeded, std::string& logOut) {
+    if (attackNeeded <= 0) return;
+    const std::string handZid = activePlayerZone("hand");
+    const std::string playedZid = activePlayerZone("played");
+
+    int unplayedHandAttack = 0;
+    struct HandCand {
+        PileId pileId;
+        CardInst card;
+        int effAtk;
+        bool isStarter;
+    };
+    std::vector<HandCand> cands;
+    for (const auto& p : state_.piles) {
+        if (p.zone != handZid || p.cards.empty()) continue;
+        const CardInst c = p.top();
+        int effAtk = 0;
+        if (auto it = state_.accountedCardAttack.find(c.uid); it != state_.accountedCardAttack.end()) {
+            effAtk = it->second;
+        } else {
+            int r = 0, a = 0;
+            effectiveCardStats(c, &r, &a);
+            effAtk = a;
+        }
+        if (effAtk > 0) {
+            unplayedHandAttack += effAtk;
+            cands.push_back({p.id, c, effAtk, c.def == 224});
+        }
+    }
+
+    const int alreadyPlayedUnspent = std::max(0, state_.attackPool - unplayedHandAttack);
+    int needFromHand = attackNeeded - alreadyPlayedUnspent;
+    if (needFromHand <= 0 || cands.empty()) return;
+
+    // Prioritize Starter cards (Brute Strength id 224) first, then lowest Attack value
+    std::sort(cands.begin(), cands.end(), [](const HandCand& a, const HandCand& b) {
+        if (a.isStarter != b.isStarter) return a.isStarter > b.isStarter;
+        if (a.effAtk != b.effAtk) return a.effAtk < b.effAtk;
+        return a.card.uid < b.card.uid;
+    });
+
+    bool movedAny = false;
+    for (const auto& hc : cands) {
+        if (needFromHand <= 0) break;
+        if (Pile* hp = find(hc.pileId)) {
+            const Vec2 fromPos = hp->pos;
+            hp->zone = playedZid;
+            needFromHand -= hc.effAtk;
+            movedAny = true;
+            reflowZone(playedZid);
+            if (const Pile* afterP = find(hc.pileId)) {
+                queueCardFlight(hc.card, fromPos, afterP->pos, true, true);
+            }
+            const CardDef& cd = catalog_.card(hc.card.def);
+            logOut += " [Auto-played " + (cd.title.empty() ? cd.name : cd.title) + " (" +
+                      std::to_string(hc.effAtk) + " ///)]";
+        }
+    }
+    if (movedAny) {
+        reflowZone(handZid);
+        reflowZone(playedZid);
+        syncStateFromZones();
+    }
+}
+
+void Table::autoPlayHandCardMatchingDef(int defId, std::string& logOut) {
+    const std::string handZid = activePlayerZone("hand");
+    const std::string playedZid = activePlayerZone("played");
+    for (auto& p : state_.piles) {
+        if (p.zone == handZid && !p.cards.empty() && p.top().def == defId) {
+            const Vec2 fromPos = p.pos;
+            const CardInst c = p.top();
+            const PileId pid = p.id;
+            p.zone = playedZid;
+            reflowZone(handZid);
+            reflowZone(playedZid);
+            if (const Pile* afterP = find(pid)) {
+                queueCardFlight(c, fromPos, afterP->pos, true, true);
+            }
+            const CardDef& cd = catalog_.card(defId);
+            logOut += " [Auto-played " + (cd.title.empty() ? cd.name : cd.title) + "]";
+            syncStateFromZones();
+            return;
+        }
+    }
+}
+
+int Table::maxAbilityActivationsForCard(const CardInst& c) const {
+    const CardDef& d = catalog_.card(c.def);
+    switch (c.def) {
+    case 0:  // Sexual Tyrannosaurus (Blain): [Survival]: Heal Strike with least damage
+    case 1:  // Ol' Painless Is Waiting (Blain): [Leadership]: Any player draws 2 & discards 2
+    case 5:  // Pushing Pencils (Dillon): [Tech]: Sneak Peek hidden card in The Wilds & optional free scan
+    case 13: // Same Kind of Jungle (Mac): [Strength]: Switch two cards in The Wilds
+        return (countTurnClass(d.classType) >= 2) ? 1 : 0;
+    case 8: // Stick Around (Dutch): [Dutch's Team]: Kill a card in your hand or played area
+        return (countTurnTeam(d.team) >= 2) ? 1 : 0;
+    case 14: // I See You (Mac): Brothers in Arms: Heal a Strike (0..3 times)
+        return countOtherBarracksChars(d.subtitle);
+    case 3:  // Ain't Got Time to Bleed (Blain Rare): Flip top 2 Strikes for +Attack
+    case 7:  // I Can Get Even (Dillon Rare): Choose player -> hand gains Coordinate
+    case 11: // If It Bleeds, We Can Kill It (Dutch Rare): Can't die until end of next turn
+    case 12: // Gonna Cut Your Name Into Him! (Mac): Draw a card
+    case 85: // City Hunter Role (Close Quarters): Activate: Draw a card
+    case 87: // Elder Hunter Role (Crafty Veteran): Activate: Heal a Strike from yourself
+    case 89: // Gunslinger Hunter Role (Quick Draw): Activate: +1 Free Scan
+    case 91: // Jungle Hunter Role (Stalking the Jungle): Activate: Draw a card
+    case 93: // Primeval Hunter Role (First of His Breed): Activate: Draw a card
+        return 1;
+    case 67: // Knocking on Doors (Detective Role): Call For Backup: Draw a card
+    case 69: // Running the Streets (Gangster Role): Call For Backup: Kill one of your cards
+    case 75: // The Highest Tech (OWLF Agent Role): Call For Backup: Swap printed Recruit/Attack on a card
+    case 77: // Position and Situation (Radioman Role): Call For Backup: Put card from discard on top of deck
+    case 79: // Sources and Contacts (Reporter Role): Call For Backup: Heal a Strike from any player
+    case 81: // Partners in Crime (SWAT Officer Role): Call For Backup: Gain Commander or HQ card <= 3
+    case 83: // It Ain't No Man (Tracker Role): Call For Backup: Scan any space
+        return state_.coordinatedCountThisTurn;
+    default:
+        return 0;
+    }
+}
+
+int Table::remainingAbilityActivations(const CardInst& c, std::string* labelOut,
+                                       std::string* reasonOut) const {
+    const int maxUses = maxAbilityActivationsForCard(c);
+    int used = 0;
+    if (auto it = state_.abilityUsesThisTurn.find(c.uid); it != state_.abilityUsesThisTurn.end()) {
+        used = it->second;
+    }
+    const int rem = std::max(0, maxUses - used);
+    const CardDef& d = catalog_.card(c.def);
+
+    if (labelOut) {
+        switch (c.def) {
+        case 0:
+            *labelOut = "[Survival] Heal Lowest-Damage Strike";
+            break;
+        case 1:
+            *labelOut = "[Leadership] Player Draws 2 & Discards 2";
+            break;
+        case 3:
+            *labelOut = "Flip Top 2 Strikes for +Attack";
+            break;
+        case 5:
+            *labelOut = "[Tech] Sneak Peek Hidden Wilds Card";
+            break;
+        case 7:
+            *labelOut = "Grant Player's Hand Coordinate This Turn";
+            break;
+        case 8:
+            *labelOut = "[Dutch's Team] Choose a Card to Kill";
+            break;
+        case 11:
+            *labelOut = "Activate Death Immunity (Until End of Next Turn)";
+            break;
+        case 12:
+            *labelOut = "Draw 1 Card";
+            break;
+        case 13:
+            *labelOut = "[Strength] Switch Two Cards in The Wilds";
+            break;
+        case 14:
+            *labelOut = "Brothers in Arms: Heal a Strike (" + std::to_string(rem) + " left)";
+            break;
+        case 67:
+            *labelOut = "Call For Backup: Draw 1 Card";
+            break;
+        case 69:
+            *labelOut = "Call For Backup: Choose a Card to Kill";
+            break;
+        case 75:
+            *labelOut = "Call For Backup: Swap Card Recruit & Attack";
+            break;
+        case 77:
+            *labelOut = "Call For Backup: Place Discard Card on Deck Top";
+            break;
+        case 79:
+            *labelOut = "Call For Backup: Heal a Strike From Any Player";
+            break;
+        case 81:
+            *labelOut = "Call For Backup: Gain Commander or HQ Card (Cost <= 3)";
+            break;
+        case 83:
+            *labelOut = "Call For Backup: +1 Free Scan";
+            break;
+        case 85:
+        case 91:
+        case 93:
+            *labelOut = "Activate: Draw 1 Card";
+            break;
+        case 87:
+            *labelOut = "Activate: Heal a Strike From Yourself";
+            break;
+        case 89:
+            *labelOut = "Activate: +1 Free Scan";
+            break;
+        default:
+            *labelOut = "Activate Ability";
+            break;
+        }
+    }
+
+    if (rem <= 0) {
+        if (reasonOut) {
+            if (used > 0 && maxUses > 0) {
+                *reasonOut = "Ability already used this turn.";
+            } else if (c.def == 0 || c.def == 1 || c.def == 5 || c.def == 13) {
+                *reasonOut = "Requires at least 2 [" + d.classType + "] cards in your hand/turn.";
+            } else if (c.def == 8) {
+                *reasonOut = "Requires at least 2 [" + d.team + "] cards in your hand/turn.";
+            } else if (c.def == 14) {
+                *reasonOut = "Requires at least 1 other Barracks character in your hand/turn.";
+            } else if (c.def >= 65 && c.def <= 83) {
+                *reasonOut = "Requires Call For Backup (a card Coordinated this turn).";
+            } else {
+                *reasonOut = "No activatable ability.";
+            }
+        }
+        return 0;
+    }
+
+    // Check board/target preconditions so abilities don't misfire with 0 valid targets
+    if (c.def == 0 || c.def == 14 || c.def == 79) {
+        bool anyWounds = false;
+        for (int q = 0; q < state_.playerCount; ++q) {
+            if (q < static_cast<int>(state_.players.size()) &&
+                state_.players[static_cast<size_t>(q)].alive) {
+                if (const Pile* w = findZonePile(playerZone(q, "strikes"));
+                    w && !w->cards.empty()) {
+                    anyWounds = true;
+                    break;
+                }
+            }
+        }
+        if (!anyWounds) {
+            if (reasonOut) *reasonOut = "No players currently have any Strikes to heal.";
+            return 0;
+        }
+    } else if (c.def == 87) {
+        const Pile* w = findZonePile(activePlayerZone("strikes"));
+        if (!w || w->cards.empty()) {
+            if (reasonOut) *reasonOut = "You have no Strikes to heal.";
+            return 0;
+        }
+    } else if (c.def == 5) {
+        bool anyHiddenWilds = false;
+        for (int s = 0; s <= 4; ++s) {
+            if (const Pile* wp = findZonePile("wilds_" + std::to_string(s));
+                wp && !wp->cards.empty() && !wp->top().faceUp) {
+                anyHiddenWilds = true;
+                break;
+            }
+        }
+        if (!anyHiddenWilds) {
+            if (reasonOut) *reasonOut = "There are no hidden (face-down) cards in The Wilds.";
+            return 0;
+        }
+    } else if (c.def == 13) {
+        int swappableCount = 0;
+        for (int s = 0; s <= 4; ++s) {
+            if (isWildsSlotSwappable(s)) ++swappableCount;
+        }
+        if (swappableCount < 2) {
+            if (reasonOut) *reasonOut = "Requires at least 2 swappable cards in The Wilds.";
+            return 0;
+        }
+    } else if (c.def == 77) {
+        const Pile* disc = findZonePile(activePlayerZone("discard"));
+        if (!disc || disc->cards.empty()) {
+            if (reasonOut) *reasonOut = "Your Discard pile is empty.";
+            return 0;
+        }
+    }
+
+    return rem;
+}
+
+bool Table::canActivateCardAbility(std::uint32_t cardUid, std::string* labelOut,
+                                   std::string* reasonOut) const {
+    if (state_.phase != TurnPhase::ActionPhase) {
+        if (reasonOut) *reasonOut = "Abilities can only be activated during the Action Phase.";
+        return false;
+    }
+    if (hasPendingModal()) {
+        if (reasonOut) *reasonOut = "Finish the current modal prompt first.";
+        return false;
+    }
+
+    const std::string handZid = activePlayerZone("hand");
+    const std::string playedZid = activePlayerZone("played");
+    for (const auto& p : state_.piles) {
+        if ((p.zone == handZid || p.zone == playedZid) && !p.cards.empty() &&
+            p.top().uid == cardUid) {
+            return remainingAbilityActivations(p.top(), labelOut, reasonOut) > 0;
+        }
+    }
+    for (const auto& cc : state_.coordinatedCards) {
+        if (cc.uid == cardUid) {
+            return remainingAbilityActivations(cc, labelOut, reasonOut) > 0;
+        }
+    }
+    if (reasonOut) *reasonOut = "Card is not in the active player's Hand or Played Area.";
+    return false;
+}
+
+std::string Table::activateCardAbility(std::uint32_t cardUid, std::uint32_t seed) {
+    if (state_.phase == TurnPhase::EnemyPhase) {
+        resolveEnemyPhase(seed);
+    }
+    std::string label, reason;
+    if (!canActivateCardAbility(cardUid, &label, &reason)) {
+        return reason.empty() ? "Cannot activate ability right now." : reason;
+    }
+
+    const std::string handZid = activePlayerZone("hand");
+    const std::string playedZid = activePlayerZone("played");
+
+    std::optional<CardInst> targetCard;
+    PileId handPileToMove = kNoPile;
+    for (const auto& p : state_.piles) {
+        if ((p.zone == handZid || p.zone == playedZid) && !p.cards.empty() &&
+            p.top().uid == cardUid) {
+            targetCard = p.top();
+            if (p.zone == handZid) handPileToMove = p.id;
+            break;
+        }
+    }
+    if (!targetCard) {
+        for (const auto& cc : state_.coordinatedCards) {
+            if (cc.uid == cardUid) {
+                targetCard = cc;
+                break;
+            }
+        }
+    }
+    if (!targetCard) return "Card not found.";
+
+    // If the card is still in Hand, move it to Played Area (or Avatar slot for id 11) with flight animation!
+    if (handPileToMove != kNoPile) {
+        if (Pile* hp = find(handPileToMove)) {
+            const Vec2 fromPos = hp->pos;
+            hp->zone = playedZid;
+            reflowZone(handZid);
+            reflowZone(playedZid);
+            if (const Pile* afterP = find(handPileToMove)) {
+                queueCardFlight(*targetCard, fromPos, afterP->pos, true, true);
+            }
+        }
+    }
+
+    const int ap = state_.activePlayer;
+    const CardDef& d = catalog_.card(targetCard->def);
+    const std::string cardTitle = d.title.empty() ? d.name : d.title;
+    std::string log = "P" + std::to_string(ap + 1) + " activated " + cardTitle + ": ";
+
+    switch (targetCard->def) {
+    case 0: // Sexual Tyrannosaurus (Blain): [Survival]: Heal Strike with least damage
+        state_.pendingHealChoice = true;
+        state_.pendingHealLeastOnly = true;
+        state_.pendingAbilitySourceUid = targetCard->uid;
+        log += "Choose a lowest-damage Strike to heal.";
         break;
+
+    case 1: // Ol' Painless Is Waiting (Blain): [Leadership]: Any player draws 2 & discards 2
+        state_.pendingPlayerChoiceMode = 1;
+        state_.pendingAbilitySourceUid = targetCard->uid;
+        if (state_.playerCount == 1) {
+            state_.abilityUsesThisTurn[targetCard->uid] += 1;
+            state_.pendingPlayerChoiceMode = 0;
+            return resolvePlayerPickerChoice(ap, seed);
+        }
+        log += "Choose which player draws 2 cards and discards 2 cards.";
+        break;
+
     case 3: { // Ain't Got Time to Bleed (Blain Rare): Flip top 2 Strikes into discard & gain Attack
+        state_.abilityUsesThisTurn[targetCard->uid] += 1;
         int bonusAtk = 0;
         for (int i = 0; i < 2; ++i) {
             Pile* strikes = findZonePile("strikes");
+            if (!strikes || strikes->cards.empty()) {
+                Pile* discStrikes = findZonePile("discard_strikes");
+                if (discStrikes && !discStrikes->cards.empty()) {
+                    std::mt19937 rng(seed + static_cast<std::uint32_t>(i * 37));
+                    std::vector<CardInst> recycled = std::move(discStrikes->cards);
+                    discStrikes->cards.clear();
+                    for (auto& rc : recycled) {
+                        rc.faceUp = false;
+                        rc.attached = false;
+                    }
+                    std::shuffle(recycled.begin(), recycled.end(), rng);
+                    Pile& newStrikes = ensureZonePile("strikes", {1620.f, 550.f}, "");
+                    newStrikes.cards = std::move(recycled);
+                    strikes = &newStrikes;
+                }
+            }
             if (!strikes || strikes->cards.empty()) break;
+            const Vec2 fromPos = strikes->pos;
             CardInst s = strikes->cards.back();
             strikes->cards.pop_back();
             s.faceUp = true;
             bonusAtk += std::max(0, catalog_.card(s.def).attack);
             Pile& discStrikes = ensureZonePile("discard_strikes", {1846.f, 547.f}, "");
             discStrikes.cards.push_back(s);
+            queueCardFlight(s, fromPos, discStrikes.pos, false, true, i);
         }
         state_.attackPool += bonusAtk;
-        logOut += " [Ain't Got Time to Bleed: Flipped 2 Strikes for +" + std::to_string(bonusAtk) +
-                  " Attack!]";
+        log += "Flipped 2 Strikes into Discarded Strikes for +" + std::to_string(bonusAtk) +
+               " Attack ///!";
         break;
     }
-    case 4: // Real Nasty Habit (Dillon): Avoid any one Strike
-        state_.avoidStrikesAvailable += 1;
-        logOut += " [+1 Avoid Strike ready!]";
-        break;
-    case 5: // Pushing Pencils (Dillon): [Tech]: Look at hidden card & scan it
-        if (classAlreadyPlayed) {
-            state_.freeScansAvailable += 1;
-            logOut += " [Tech Combo: +1 Free Scan!]";
-        }
-        break;
-    case 6: // Before Anybody Knows We Were There (Dillon): Brothers in Arms: +2 Recruit
-        if (otherBarracksChars > 0) {
-            const int bonus = otherBarracksChars * 2;
-            state_.recruitPool += bonus;
-            logOut += " [Brothers in Arms: +" + std::to_string(bonus) + " Recruit!]";
-        }
-        break;
-    case 8: // Stick Around (Dutch): [Dutch's Team]: You may kill a card in your hand (thin starter)
-        if (teamAlreadyPlayed) {
-            for (auto& p : state_.piles) {
-                if (p.zone == handZid && !p.cards.empty() &&
-                    (p.top().def == 224 || p.top().def == 225)) {
-                    CardInst killed = p.cards.back();
-                    p.cards.pop_back();
-                    Pile& deadChars = ensureZonePile("dead_characters", {1846.f, 871.f}, "");
-                    deadChars.cards.push_back(killed);
-                    logOut += " [Stick Around: Killed starter '" + catalog_.card(killed.def).name +
-                              "' from hand!]";
-                    reflowZone(handZid);
-                    break;
-                }
-            }
-        }
-        break;
-    case 9: // Knock Knock (Dutch): Enemies in Combat Zone have -1 Attack this turn
-        state_.combatZoneAttackPenalty += 1;
-        logOut += " [Knock Knock: Combat Zone enemies have -1 Attack this turn!]";
-        break;
-    case 10: // Bad Idea (Dutch): Brothers in Arms: +2 Attack
-        if (otherBarracksChars > 0) {
-            const int bonus = otherBarracksChars * 2;
-            state_.attackPool += bonus;
-            logOut += " [Brothers in Arms: +" + std::to_string(bonus) + " Attack!]";
-        }
-        break;
-    case 11: // If It Bleeds, We Can Kill It (Dutch Rare): Can't die until end of next turn
-        if (ap < static_cast<int>(state_.players.size())) {
-            state_.players[static_cast<size_t>(ap)].cannotDieTurnsRemaining = 2;
-        }
-        state_.cannotDieTurnsRemaining = 2;
-        logOut += " [DUTCH RARE: You cannot die until the end of your next turn!]";
-        break;
-    case 12: // Gonna Cut Your Name Into Him! (Mac): Draw a card
-        drawPlayerCards(ap, 1, seed, logOut);
-        logOut += " [Drew 1 card!]";
-        break;
-    case 14: // I See You (Mac): Brothers in Arms: Heal a Strike
-        if (otherBarracksChars > 0) {
-            healPlayerStrikes(ap, otherBarracksChars, false, logOut);
-        }
-        break;
-    case 15: // Gonna Have Me Some Fun (Mac Rare): Each time you kill an Enemy this turn, draw 2
-        state_.drawCardsOnKill += 2;
-        logOut += " [Gonna Have Me Some Fun: Draw 2 cards per Enemy killed this turn!]";
+
+    case 5: // Pushing Pencils (Dillon): [Tech]: Sneak Peek hidden card in The Wilds
+        state_.pendingSneakPeekChoice = true;
+        state_.sneakPeekRevealedCardSelected = false;
+        state_.sneakPeekWildsSlot = -1;
+        state_.pendingAbilitySourceUid = targetCard->uid;
+        log += "Choose a hidden card in The Wilds to Sneak Peek.";
         break;
 
-    // --- Unique Role Card Abilities (All 15 Characters) ---
-    case 65: // In the Shadows (CIA Agent Role): Call For Backup: Avoid any one Strike
-        if (state_.coordinatedCountThisTurn > 0) {
-            state_.avoidStrikesAvailable += 1;
-            logOut += " [Call For Backup: +1 Avoid Strike!]";
+    case 7: // I Can Get Even (Dillon Rare): Choose player -> hand gains Coordinate
+        state_.pendingPlayerChoiceMode = 3;
+        state_.pendingAbilitySourceUid = targetCard->uid;
+        if (state_.playerCount == 1) {
+            state_.abilityUsesThisTurn[targetCard->uid] += 1;
+            state_.pendingPlayerChoiceMode = 0;
+            return resolvePlayerPickerChoice(ap, seed);
         }
+        log += "Choose a player whose hand cards gain Coordinate this turn.";
         break;
-    case 67: // Knocking on Doors (Detective Role): Call For Backup: Draw a card
-        if (state_.coordinatedCountThisTurn > 0) {
-            drawPlayerCards(ap, 1, seed + 19u, logOut);
-            logOut += " [Call For Backup: Drew 1 card!]";
-        }
-        break;
+
+    case 8:  // Stick Around (Dutch): [Dutch's Team]: Kill a card in your hand or played area
     case 69: // Running the Streets (Gangster Role): Call For Backup: Kill one of your cards
-        if (state_.coordinatedCountThisTurn > 0) {
-            for (auto& p : state_.piles) {
-                if (p.zone == handZid && !p.cards.empty() &&
-                    (p.top().def == 224 || p.top().def == 225)) {
-                    CardInst killed = p.cards.back();
-                    p.cards.pop_back();
-                    Pile& deadChars = ensureZonePile("dead_characters", {1846.f, 871.f}, "");
-                    deadChars.cards.push_back(killed);
-                    logOut += " [Call For Backup: Killed starter '" +
-                              catalog_.card(killed.def).name + "'!]";
-                    reflowZone(handZid);
-                    break;
-                }
-            }
-        }
+        state_.pendingKillChoice = true;
+        state_.pendingKillCount = 1;
+        state_.pendingKillMinCost = 0;
+        state_.pendingKillMandatory = false;
+        state_.pendingKillStayUntilCleanup = true;
+        state_.pendingAbilitySourceUid = targetCard->uid;
+        log += "Choose a card in your Hand or Played Area to kill (stays in play with KILLED badge until Cleanup).";
         break;
-    case 71: // Fighting the Good Fight (Guerrilla Role): Call For Backup: +1 Attack
-        if (state_.coordinatedCountThisTurn > 0) {
-            state_.attackPool += 1;
-            logOut += " [Call For Backup: +1 Attack!]";
+
+    case 11: // If It Bleeds, We Can Kill It (Dutch Rare): Can't die until end of next turn
+        state_.abilityUsesThisTurn[targetCard->uid] += 1;
+        if (ap < static_cast<int>(state_.players.size())) {
+            state_.players[static_cast<size_t>(ap)].cannotDieTurnsRemaining = 2;
+            state_.players[static_cast<size_t>(ap)].activeImmunityCardUid = targetCard->uid;
         }
+        state_.cannotDieTurnsRemaining = 2;
+        reflowZone(playedZid);
+        log += "Stationed next to your Avatar! You cannot die until the end of your next turn.";
         break;
-    case 73: // Command Decisions (Lieutenant Role): Call For Backup: +2 Recruit
-        if (state_.coordinatedCountThisTurn > 0) {
-            state_.recruitPool += 2;
-            logOut += " [Call For Backup: +2 Recruit!]";
-        }
-        break;
-    case 75: // The Highest Tech (OWLF Agent Role): Call For Backup: +1 Attack
-        if (state_.coordinatedCountThisTurn > 0) {
-            state_.attackPool += 1;
-            logOut += " [Call For Backup: +1 Attack!]";
-        }
-        break;
-    case 77: // Position and Situation (Radioman Role): Call For Backup: Put card from discard on top of deck
-        if (state_.coordinatedCountThisTurn > 0) {
-            if (Pile* disc = findZonePile(discZid); disc && !disc->cards.empty()) {
-                CardInst top = disc->cards.back();
-                disc->cards.pop_back();
-                top.faceUp = false;
-                Pile& deck = ensureZonePile(deckZid, {2002.f, 1367.f}, "");
-                deck.cards.push_back(top);
-                logOut += " [Call For Backup: Placed " + catalog_.card(top.def).name +
-                          " on top of Deck!]";
-            }
-        }
-        break;
-    case 79: // Sources and Contacts (Reporter Role): Call For Backup: Heal a Strike from any player
-        if (state_.coordinatedCountThisTurn > 0) {
-            healPlayerStrikes(ap, 1, false, logOut);
-        }
-        break;
-    case 81: // Partners in Crime (SWAT Officer Role): Call For Backup: Gain a Commander
-        if (state_.coordinatedCountThisTurn > 0) {
-            if (Pile* cmd = findZonePile("commanders"); cmd && !cmd->cards.empty()) {
-                CardInst gained = cmd->cards.back();
-                cmd->cards.pop_back();
-                gained.faceUp = true;
-                Pile& disc = ensureZonePile(discZid, {2207.f, 1367.f}, "");
-                disc.cards.push_back(gained);
-                logOut += " [Call For Backup: Gained Commander!]";
-            }
-        }
-        break;
-    case 83: // It Ain't No Man (Tracker Role): Call For Backup: Scan any space
-        if (state_.coordinatedCountThisTurn > 0) {
-            state_.freeScansAvailable += 1;
-            logOut += " [Call For Backup: +1 Free Scan!]";
-        }
-        break;
+
+    case 12: // Gonna Cut Your Name Into Him! (Mac): Draw a card
+    case 67: // Knocking on Doors (Detective Role): Call For Backup: Draw a card
     case 85: // City Hunter Role
-    case 87: // Elder Hunter Role
-    case 89: // Gunslinger Hunter Role
     case 91: // Jungle Hunter Role
     case 93: // Primeval Hunter Role
-        drawPlayerCards(ap, 1, seed + 23u, logOut);
-        logOut += " [Activate: Drew 1 card!]";
+        state_.abilityUsesThisTurn[targetCard->uid] += 1;
+        drawPlayerCards(ap, 1, seed + 23u, log);
+        log += "Drew 1 card!";
         break;
+
+    case 13: // Same Kind of Jungle (Mac): [Strength]: Switch two cards in The Wilds
+        state_.pendingWildsSwapChoice = true;
+        state_.wildsSwapFirstSlot = -1;
+        state_.pendingAbilitySourceUid = targetCard->uid;
+        log += "Select two spaces in The Wilds to switch their cards.";
+        break;
+
+    case 14: // I See You (Mac): Brothers in Arms: Heal a Strike from any player
+    case 79: // Sources and Contacts (Reporter Role): Call For Backup: Heal a Strike from any player
+        state_.pendingHealChoice = true;
+        state_.pendingHealLeastOnly = false;
+        state_.pendingAbilitySourceUid = targetCard->uid;
+        log += "Choose a Strike on any player to heal.";
+        break;
+
+    case 75: // The Highest Tech (OWLF Agent Role): Call For Backup: Swap printed Recruit/Attack on a card
+        state_.pendingStatSwapChoice = true;
+        state_.pendingAbilitySourceUid = targetCard->uid;
+        log += "Choose a card in your Hand or Played Area to swap its printed Recruit * and Attack /// this turn.";
+        break;
+
+    case 77: // Position and Situation (Radioman Role): Call For Backup: Put card from discard on top of deck
+        state_.pendingDiscardToDeckChoice = true;
+        state_.pendingAbilitySourceUid = targetCard->uid;
+        log += "Choose a card from your Discard pile to place face-down on top of your Deck.";
+        break;
+
+    case 81: // Partners in Crime (SWAT Officer Role): Call For Backup: Gain Commander or HQ card <= 3
+        state_.pendingGainCardChoice = true;
+        state_.pendingAbilitySourceUid = targetCard->uid;
+        log += "Choose a Commander or an HQ card with cost 3 or less to gain to your Discard pile.";
+        break;
+
+    case 83: // It Ain't No Man (Tracker Role): Call For Backup: Scan any space
+    case 89: // Gunslinger Hunter Role (Quick Draw): Activate: +1 Free Scan
+        state_.abilityUsesThisTurn[targetCard->uid] += 1;
+        state_.freeScansAvailable += 1;
+        log += "+1 Free Scan ready!";
+        break;
+
+    case 87: // Elder Hunter Role (Crafty Veteran): Activate: Heal a Strike from yourself
+        state_.pendingHealChoice = true;
+        state_.pendingHealLeastOnly = false;
+        state_.pendingAbilitySourceUid = targetCard->uid;
+        log += "Choose one of your Strikes to heal.";
+        break;
+
     default:
         break;
     }
+
+    syncStateFromZones();
+    state_.lastActionLog = log;
+    recordMove("ACTIVATE_ABILITY", cardTitle, 1, playedZid, playedZid, 1, true, log);
+    return log;
+}
+
+bool Table::hasPendingModal() const {
+    return state_.pendingSacrificeChoice || state_.pendingCoverMeChoice ||
+           state_.pendingSneakPeekChoice || state_.pendingKillChoice ||
+           state_.pendingHealChoice || state_.pendingPlayerChoiceMode != 0 ||
+           state_.pendingWildsSwapChoice || state_.pendingStatSwapChoice ||
+           state_.pendingDiscardToDeckChoice || state_.pendingGainCardChoice ||
+           state_.pendingLikeAHunterModal;
+}
+
+std::string Table::cancelOptionalModal() {
+    if (state_.pendingKillChoice && state_.pendingKillMandatory) {
+        return "This kill effect is mandatory and cannot be canceled.";
+    }
+    if (state_.pendingPlayerChoiceMode == 2) {
+        return "Must finish choosing cards to discard.";
+    }
+    if (state_.pendingSacrificeChoice || state_.pendingCoverMeChoice) {
+        return "Must resolve the incoming Strike prompt.";
+    }
+
+    state_.pendingSneakPeekChoice = false;
+    state_.sneakPeekRevealedCardSelected = false;
+    state_.sneakPeekWildsSlot = -1;
+    state_.pendingKillChoice = false;
+    state_.pendingHealChoice = false;
+    state_.pendingPlayerChoiceMode = 0;
+    state_.pendingWildsSwapChoice = false;
+    state_.wildsSwapFirstSlot = -1;
+    state_.pendingStatSwapChoice = false;
+    state_.pendingDiscardToDeckChoice = false;
+    state_.pendingGainCardChoice = false;
+    state_.pendingLikeAHunterModal = false;
+    state_.pendingAbilitySourceUid = 0;
+    state_.lastActionLog = "Canceled ability prompt (ability remains available this turn).";
+    return state_.lastActionLog;
+}
+
+std::string Table::selectSneakPeekWildsSlot(int slotIdx) {
+    if (!state_.pendingSneakPeekChoice) return "No Sneak Peek active.";
+    if (slotIdx < 0 || slotIdx > 4) return "Invalid Wilds slot.";
+    const Pile* wp = findZonePile("wilds_" + std::to_string(slotIdx));
+    if (!wp || wp->cards.empty() || wp->top().faceUp) {
+        return std::string(wildsName(slotIdx)) + " does not have a hidden face-down card.";
+    }
+    state_.sneakPeekWildsSlot = slotIdx;
+    state_.sneakPeekRevealedCardSelected = true;
+    if (state_.pendingAbilitySourceUid != 0) {
+        state_.abilityUsesThisTurn[state_.pendingAbilitySourceUid] += 1;
+        state_.pendingAbilitySourceUid = 0;
+    }
+    const CardDef& d = catalog_.card(wp->top().def);
+    state_.lastActionLog = "Sneak Peek (" + std::string(wildsName(slotIdx)) +
+                           "): Privately viewing '" + d.name +
+                           "'. Choose whether to scan it face-up for free or keep it hidden!";
+    return state_.lastActionLog;
+}
+
+std::string Table::resolveSneakPeekDecision(bool freeScanFaceUp, std::uint32_t seed) {
+    if (!state_.pendingSneakPeekChoice || !state_.sneakPeekRevealedCardSelected) {
+        return "Select a hidden Wilds space to Sneak Peek first.";
+    }
+    const int slotIdx = state_.sneakPeekWildsSlot;
+    state_.pendingSneakPeekChoice = false;
+    state_.sneakPeekRevealedCardSelected = false;
+    state_.sneakPeekWildsSlot = -1;
+
+    Pile* wp = findZonePile("wilds_" + std::to_string(slotIdx));
+    if (!wp || wp->cards.empty()) return "Wilds slot is empty.";
+
+    const CardDef& d = catalog_.card(wp->top().def);
+    std::string log;
+    if (!freeScanFaceUp) {
+        log = "Pushing Pencils: Kept hidden card in " + std::string(wildsName(slotIdx)) +
+              " face-down (no Reveal effect triggered).";
+    } else {
+        wp->cards.back().faceUp = true;
+        visual(wp->id).flipT = 0.f;
+        log = "Pushing Pencils: Free-scanned " + std::string(wildsName(slotIdx)) + " -> revealed " +
+              d.name + "!";
+        onCardRevealedInWilds(wp->id, slotIdx, seed, log);
+    }
+    syncStateFromZones();
+    state_.lastActionLog = log;
+    recordMove("SNEAK_PEEK", d.name, 1, "wilds_" + std::to_string(slotIdx),
+               "wilds_" + std::to_string(slotIdx), 1, freeScanFaceUp, log);
+    return log;
+}
+
+std::string Table::resolveKillCardChoice(std::uint32_t targetCardUid) {
+    if (!state_.pendingKillChoice) return "No pending Kill Card choice.";
+
+    const std::string handZid = activePlayerZone("hand");
+    const std::string playedZid = activePlayerZone("played");
+
+    Pile* targetPile = nullptr;
+    for (auto& p : state_.piles) {
+        if ((p.zone == handZid || p.zone == playedZid) && !p.cards.empty() &&
+            p.top().uid == targetCardUid) {
+            targetPile = &p;
+            break;
+        }
+    }
+    if (!targetPile) return "Select a card in your Hand or Played Area.";
+    if (targetCardUid == state_.pendingAbilitySourceUid && !state_.pendingKillMandatory) {
+        return "Choose a different card to kill.";
+    }
+    if (isCardKilledInPlayed(targetCardUid)) {
+        return "That card is already marked as KILLED.";
+    }
+
+    const CardInst c = targetPile->top();
+    const CardDef& d = catalog_.card(c.def);
+    if (d.cost < state_.pendingKillMinCost) {
+        return "You must choose a card with cost " + std::to_string(state_.pendingKillMinCost) +
+               " or greater.";
+    }
+
+    if (state_.pendingAbilitySourceUid != 0) {
+        state_.abilityUsesThisTurn[state_.pendingAbilitySourceUid] += 1;
+        state_.pendingAbilitySourceUid = 0;
+    }
+
+    std::string log;
+    if (state_.pendingKillStayUntilCleanup) {
+        // Player ability kill (Stick Around / Running the Streets):
+        // Card stays in Played Area with KILLED badge until Cleanup, keeping its stats/class/team for the turn!
+        const Vec2 fromPos = targetPile->pos;
+        const PileId pid = targetPile->id;
+        targetPile->zone = playedZid;
+        state_.killedPlayedUids.push_back(c.uid);
+        reflowZone(handZid);
+        reflowZone(playedZid);
+        if (const Pile* afterP = find(pid)) {
+            if (std::hypot(afterP->pos.x - fromPos.x, afterP->pos.y - fromPos.y) > 4.f) {
+                queueCardFlight(c, fromPos, afterP->pos, true, true);
+            }
+        }
+        log = "Marked '" + (d.title.empty() ? d.name : d.title) +
+              "' as KILLED in Played Area (retains stats/class/team this turn -> moves to Dead Characters at Cleanup).";
+    } else {
+        // Enemy death mandatory kill (Nothing On Earth / A Fitting Demise):
+        // Lock already-contributed turn stats so killing doesn't retroactively corrupt spent pools, then move to dead_characters.
+        if (std::find(state_.lockedAccountedUids.begin(), state_.lockedAccountedUids.end(),
+                      c.uid) == state_.lockedAccountedUids.end()) {
+            state_.lockedAccountedUids.push_back(c.uid);
+        }
+        const Vec2 fromPos = targetPile->pos;
+        targetPile->cards.pop_back();
+        if (targetPile->cards.empty()) {
+            const int idx = indexOf(targetPile->id);
+            if (idx >= 0) {
+                visuals_.erase(targetPile->id);
+                state_.piles.erase(state_.piles.begin() + idx);
+            }
+        }
+        Pile& deadChars = ensureZonePile("dead_characters", {1846.f, 871.f}, "");
+        deadChars.cards.push_back(c);
+        queueCardFlight(c, fromPos, deadChars.pos, true, true);
+        reflowZone(handZid);
+        reflowZone(playedZid);
+        log = "Killed '" + (d.title.empty() ? d.name : d.title) + "' -> moved to Dead Characters.";
+    }
+
+    state_.pendingKillCount -= 1;
+    if (state_.pendingKillCount <= 0) {
+        state_.pendingKillChoice = false;
+    } else {
+        // Check if any eligible card remains for multi-kill (Nothing On Earth)
+        bool anyEligibleLeft = false;
+        for (const auto& p : state_.piles) {
+            if ((p.zone == handZid || p.zone == playedZid) && !p.cards.empty() &&
+                !isCardKilledInPlayed(p.top().uid) &&
+                catalog_.card(p.top().def).cost >= state_.pendingKillMinCost) {
+                anyEligibleLeft = true;
+                break;
+            }
+        }
+        if (!anyEligibleLeft) {
+            state_.pendingKillChoice = false;
+            state_.pendingKillCount = 0;
+        }
+    }
+
+    syncStateFromZones();
+    state_.lastActionLog = log;
+    recordMove("KILL_CARD", d.title.empty() ? d.name : d.title, 1, playedZid, "dead_characters", 1,
+               true, log);
+    return log;
+}
+
+std::string Table::resolveHealStrikeChoice(int targetPlayerIdx, std::uint32_t strikeCardUid,
+                                           std::uint32_t seed) {
+    if (!state_.pendingHealChoice) return "No pending Heal Strike choice.";
+    if (targetPlayerIdx < 0 || targetPlayerIdx >= state_.playerCount) return "Invalid player.";
+
+    Pile* wounds = findZonePile(playerZone(targetPlayerIdx, "strikes"));
+    if (!wounds || wounds->cards.empty()) return "That player has no Strikes to heal.";
+
+    // Issue A2 — Open Wound (def 194): "Your Strikes other than Open Wounds can't be healed."
+    bool hasOpenWound = false;
+    for (const auto& c : wounds->cards) {
+        if (c.def == 194) {
+            hasOpenWound = true;
+            break;
+        }
+    }
+
+    int minAllowedDmg = 999;
+    if (state_.pendingHealLeastOnly) {
+        for (int q = 0; q < state_.playerCount; ++q) {
+            const Pile* qw = findZonePile(playerZone(q, "strikes"));
+            if (!qw || qw->cards.empty()) continue;
+            bool qOpenWound = false;
+            for (const auto& qc : qw->cards) {
+                if (qc.def == 194) {
+                    qOpenWound = true;
+                    break;
+                }
+            }
+            for (const auto& qc : qw->cards) {
+                if (qOpenWound && qc.def != 194) continue;
+                const int dmg = std::max(0, catalog_.card(qc.def).attack);
+                minAllowedDmg = std::min(minAllowedDmg, dmg);
+            }
+        }
+    }
+
+    int foundIdx = -1;
+    for (int i = 0; i < static_cast<int>(wounds->cards.size()); ++i) {
+        if (wounds->cards[static_cast<size_t>(i)].uid == strikeCardUid) {
+            foundIdx = i;
+            break;
+        }
+    }
+    if (foundIdx < 0) return "Strike card not found on that player.";
+
+    const CardInst chosen = wounds->cards[static_cast<size_t>(foundIdx)];
+    if (hasOpenWound && chosen.def != 194) {
+        return "Open Wound rule: You must heal Open Wound before any other Strike on P" +
+               std::to_string(targetPlayerIdx + 1) + "!";
+    }
+    const int chosenDmg = std::max(0, catalog_.card(chosen.def).attack);
+    if (state_.pendingHealLeastOnly && chosenDmg > minAllowedDmg) {
+        return "Sexual Tyrannosaurus must heal a Strike with the least damage (" +
+               std::to_string(minAllowedDmg) + " DMG)!";
+    }
+
+    if (state_.pendingAbilitySourceUid != 0) {
+        state_.abilityUsesThisTurn[state_.pendingAbilitySourceUid] += 1;
+        state_.pendingAbilitySourceUid = 0;
+    }
+    state_.pendingHealChoice = false;
+    state_.pendingHealLeastOnly = false;
+
+    const Vec2 fromPos = wounds->pos;
+    wounds->cards.erase(wounds->cards.begin() + foundIdx);
+    if (wounds->cards.empty()) {
+        const int idx = indexOf(wounds->id);
+        if (idx >= 0) {
+            visuals_.erase(wounds->id);
+            state_.piles.erase(state_.piles.begin() + idx);
+        }
+    }
+
+    Pile& discStrikes = ensureZonePile("discard_strikes", {1846.f, 547.f}, "");
+    discStrikes.cards.push_back(chosen);
+    queueCardFlight(chosen, fromPos, discStrikes.pos, true, true);
+    syncStateFromZones();
+
+    std::string log = "Healed P" + std::to_string(targetPlayerIdx + 1) + "'s Strike: " +
+                      catalog_.card(chosen.def).name + " (" + std::to_string(chosenDmg) + " DMG)!";
+
+    // Issue A3 — Permanent Damage (def 190): "When this Strike is healed from you, draw a Strike."
+    if (chosen.def == 190) {
+        log += " [Permanent Damage healed -> P" + std::to_string(targetPlayerIdx + 1) +
+               " draws a replacement Strike!]";
+        drawStrikeAgainstPlayer(targetPlayerIdx, seed + 89u, log);
+    }
+
+    syncStateFromZones();
+    state_.lastActionLog = log;
+    recordMove("HEAL_STRIKE", catalog_.card(chosen.def).name, 1,
+               playerZone(targetPlayerIdx, "strikes"), "discard_strikes",
+               static_cast<int>(discStrikes.cards.size()), true, log);
+    return log;
+}
+
+std::string Table::resolvePlayerPickerChoice(int chosenPlayerIdx, std::uint32_t seed) {
+    if (chosenPlayerIdx < 0 || chosenPlayerIdx >= state_.playerCount ||
+        !state_.players[static_cast<size_t>(chosenPlayerIdx)].alive) {
+        return "Choose a living player.";
+    }
+
+    const int mode = state_.pendingPlayerChoiceMode;
+    if (state_.pendingAbilitySourceUid != 0) {
+        state_.abilityUsesThisTurn[state_.pendingAbilitySourceUid] += 1;
+        state_.pendingAbilitySourceUid = 0;
+    }
+
+    std::string log;
+    if (mode == 1 || mode == 0) {
+        // Ol' Painless Is Waiting (id 1): Chosen player draws 2 cards, then discards 2 cards
+        drawPlayerCards(chosenPlayerIdx, 2, seed + 47u, log);
+        int handCount = 0;
+        const std::string hZid = playerZone(chosenPlayerIdx, "hand");
+        for (const auto& p : state_.piles) {
+            if (p.zone == hZid && !p.cards.empty()) ++handCount;
+        }
+        state_.pendingTargetPlayer = chosenPlayerIdx;
+        state_.pendingDiscardRemaining = std::min(2, handCount);
+        state_.pendingPlayerChoiceMode = (state_.pendingDiscardRemaining > 0) ? 2 : 0;
+        log = "Ol' Painless Is Waiting: P" + std::to_string(chosenPlayerIdx + 1) +
+              " drew 2 cards — now choose " + std::to_string(state_.pendingDiscardRemaining) +
+              " card(s) from P" + std::to_string(chosenPlayerIdx + 1) + "'s hand to discard.";
+    } else if (mode == 3) {
+        // I Can Get Even (id 7): All cards in chosen player's hand gain Coordinate this turn
+        state_.players[static_cast<size_t>(chosenPlayerIdx)].allHandCoordinateThisTurn = true;
+        state_.pendingPlayerChoiceMode = 0;
+        log = "I Can Get Even: All cards in P" + std::to_string(chosenPlayerIdx + 1) +
+              "'s hand gain Coordinate until end of turn!";
+    }
+
+    syncStateFromZones();
+    state_.lastActionLog = log;
+    return log;
+}
+
+std::string Table::resolveHandDiscardChoice(std::uint32_t handCardUid) {
+    if (state_.pendingPlayerChoiceMode != 2 || state_.pendingDiscardRemaining <= 0) {
+        return "No pending hand discard choice.";
+    }
+
+    const int tp = state_.pendingTargetPlayer;
+    const std::string handZid = playerZone(tp, "hand");
+    const std::string discZid = playerZone(tp, "discard");
+
+    Pile* foundPile = nullptr;
+    for (auto& p : state_.piles) {
+        if (p.zone == handZid && !p.cards.empty() && p.top().uid == handCardUid) {
+            foundPile = &p;
+            break;
+        }
+    }
+    if (!foundPile) {
+        return "Choose a card in P" + std::to_string(tp + 1) + "'s Hand to discard.";
+    }
+
+    const Vec2 fromPos = foundPile->pos;
+    CardInst disc = foundPile->top();
+    foundPile->cards.pop_back();
+    if (foundPile->cards.empty()) {
+        const int idx = indexOf(foundPile->id);
+        if (idx >= 0) {
+            visuals_.erase(foundPile->id);
+            state_.piles.erase(state_.piles.begin() + idx);
+        }
+    }
+    disc.faceUp = true;
+    disc.attached = false;
+    Pile& discPile = ensureZonePile(discZid, {2207.f, 1367.f}, "");
+    discPile.cards.push_back(disc);
+    queueCardFlight(disc, fromPos, discPile.pos, true, true);
+    reflowZone(handZid);
+
+    state_.pendingDiscardRemaining -= 1;
+    if (state_.pendingDiscardRemaining <= 0) {
+        state_.pendingPlayerChoiceMode = 0;
+    }
+
+    syncStateFromZones();
+    const CardDef& d = catalog_.card(disc.def);
+    state_.lastActionLog = "P" + std::to_string(tp + 1) + " discarded '" +
+                           (d.title.empty() ? d.name : d.title) + "'" +
+                           (state_.pendingDiscardRemaining > 0
+                                ? (" (" + std::to_string(state_.pendingDiscardRemaining) +
+                                   " more to discard).")
+                                : " (Ol' Painless complete!).");
+    return state_.lastActionLog;
+}
+
+std::string Table::resolveWildsSwapSlotClick(int slotIdx) {
+    if (!state_.pendingWildsSwapChoice) return "No Wilds swap active.";
+    if (!isWildsSlotSwappable(slotIdx)) {
+        return std::string(wildsName(slotIdx)) +
+               " does not have a swappable Enemy or hidden card (Wilds only; attached Goal cards cannot be switched).";
+    }
+
+    if (state_.wildsSwapFirstSlot < 0) {
+        state_.wildsSwapFirstSlot = slotIdx;
+        state_.lastActionLog = "Same Kind of Jungle: Selected " + std::string(wildsName(slotIdx)) +
+                               " — now click a different Wilds space to switch with!";
+        return state_.lastActionLog;
+    }
+
+    if (state_.wildsSwapFirstSlot == slotIdx) {
+        state_.wildsSwapFirstSlot = -1;
+        state_.lastActionLog = "Deselected Wilds space. Choose the first Wilds space to switch.";
+        return state_.lastActionLog;
+    }
+
+    const int slotA = state_.wildsSwapFirstSlot;
+    const int slotB = slotIdx;
+    Pile* pA = findZonePile("wilds_" + std::to_string(slotA));
+    Pile* pB = findZonePile("wilds_" + std::to_string(slotB));
+    if (!pA || pA->cards.empty() || !pB || pB->cards.empty()) {
+        state_.wildsSwapFirstSlot = -1;
+        return "Both Wilds spaces must contain a card.";
+    }
+
+    const Vec2 posA = pA->pos;
+    const Vec2 posB = pB->pos;
+    CardInst cardA = pA->cards.back();
+    CardInst cardB = pB->cards.back();
+    pA->cards.back() = cardB;
+    pB->cards.back() = cardA;
+
+    queueCardFlight(cardA, posA, posB, cardA.faceUp, cardA.faceUp, 0);
+    queueCardFlight(cardB, posB, posA, cardB.faceUp, cardB.faceUp, 1);
+
+    if (state_.pendingAbilitySourceUid != 0) {
+        state_.abilityUsesThisTurn[state_.pendingAbilitySourceUid] += 1;
+        state_.pendingAbilitySourceUid = 0;
+    }
+    state_.pendingWildsSwapChoice = false;
+    state_.wildsSwapFirstSlot = -1;
+
+    syncStateFromZones();
+    state_.lastActionLog = "Same Kind of Jungle: Switched cards between " +
+                           std::string(wildsName(slotA)) + " and " +
+                           std::string(wildsName(slotB)) + "!";
+    recordMove("SWITCH_WILDS", "Same Kind of Jungle", 2, "wilds_" + std::to_string(slotA),
+               "wilds_" + std::to_string(slotB), 1, true, state_.lastActionLog);
+    return state_.lastActionLog;
+}
+
+std::string Table::resolveStatSwapChoice(std::uint32_t cardUid) {
+    if (!state_.pendingStatSwapChoice) return "No stat swap choice pending.";
+    const std::string handZid = activePlayerZone("hand");
+    const std::string playedZid = activePlayerZone("played");
+
+    std::optional<CardInst> target;
+    for (const auto& p : state_.piles) {
+        if ((p.zone == handZid || p.zone == playedZid) && !p.cards.empty() &&
+            p.top().uid == cardUid) {
+            target = p.top();
+            break;
+        }
+    }
+    if (!target) return "Select a card in your Hand or Played Area.";
+
+    auto it = std::find(state_.swappedStatUids.begin(), state_.swappedStatUids.end(), cardUid);
+    if (it == state_.swappedStatUids.end()) {
+        state_.swappedStatUids.push_back(cardUid);
+    } else {
+        state_.swappedStatUids.erase(it);
+    }
+
+    if (state_.pendingAbilitySourceUid != 0) {
+        state_.abilityUsesThisTurn[state_.pendingAbilitySourceUid] += 1;
+        state_.pendingAbilitySourceUid = 0;
+    }
+    state_.pendingStatSwapChoice = false;
+    syncStateFromZones();
+
+    const CardDef& d = catalog_.card(target->def);
+    int r = 0, a = 0;
+    effectiveCardStats(*target, &r, &a);
+    state_.lastActionLog = "The Highest Tech: Swapped printed Recruit & Attack on '" +
+                           (d.title.empty() ? d.name : d.title) + "' -> now " + std::to_string(r) +
+                           " * / " + std::to_string(a) + " /// this turn!";
+    return state_.lastActionLog;
+}
+
+std::string Table::resolveDiscardToDeckChoice(std::uint32_t cardUid) {
+    if (!state_.pendingDiscardToDeckChoice) return "No Discard-to-Deck choice pending.";
+    const std::string discZid = activePlayerZone("discard");
+    const std::string deckZid = activePlayerZone("deck");
+
+    Pile* disc = findZonePile(discZid);
+    if (!disc || disc->cards.empty()) {
+        state_.pendingDiscardToDeckChoice = false;
+        return "Your Discard pile is empty.";
+    }
+
+    int foundIdx = -1;
+    for (int i = 0; i < static_cast<int>(disc->cards.size()); ++i) {
+        if (disc->cards[static_cast<size_t>(i)].uid == cardUid) {
+            foundIdx = i;
+            break;
+        }
+    }
+    if (foundIdx < 0) return "Card not found in your Discard pile.";
+
+    const Vec2 fromPos = disc->pos;
+    CardInst chosen = disc->cards[static_cast<size_t>(foundIdx)];
+    disc->cards.erase(disc->cards.begin() + foundIdx);
+    chosen.faceUp = false;
+    chosen.attached = false;
+
+    Pile& deck = ensureZonePile(deckZid, {2002.f, 1367.f}, "");
+    deck.cards.push_back(chosen);
+    queueCardFlight(chosen, fromPos, deck.pos, true, false);
+
+    if (state_.pendingAbilitySourceUid != 0) {
+        state_.abilityUsesThisTurn[state_.pendingAbilitySourceUid] += 1;
+        state_.pendingAbilitySourceUid = 0;
+    }
+    state_.pendingDiscardToDeckChoice = false;
+    syncStateFromZones();
+
+    const CardDef& d = catalog_.card(chosen.def);
+    state_.lastActionLog = "Position and Situation: Placed '" +
+                           (d.title.empty() ? d.name : d.title) +
+                           "' from Discard face-down on top of your Deck!";
+    return state_.lastActionLog;
+}
+
+std::string Table::resolveGainCardChoice(const std::string& sourceZoneId) {
+    if (!state_.pendingGainCardChoice) return "No Gain Card choice pending.";
+    const bool isCmd = (sourceZoneId == "commanders");
+    const bool isHq = (sourceZoneId.rfind("hq_", 0) == 0);
+    if (!isCmd && !isHq) return "Choose the Commander stack or an HQ card with cost <= 3.";
+
+    Pile* src = findZonePile(sourceZoneId);
+    if (!src || src->cards.empty()) return "That space is empty.";
+
+    const CardDef& d = catalog_.card(src->top().def);
+    const int cost = isCmd ? 3 : std::max(0, d.cost);
+    if (cost > 3) return d.name + " costs " + std::to_string(cost) + " * (max cost 3 *).";
+
+    const Vec2 fromPos = src->pos;
+    CardInst gained = src->cards.back();
+    src->cards.pop_back();
+    gained.faceUp = true;
+    gained.attached = false;
+    if (src->cards.empty()) {
+        const int idx = indexOf(src->id);
+        if (idx >= 0) {
+            visuals_.erase(src->id);
+            state_.piles.erase(state_.piles.begin() + idx);
+        }
+    }
+
+    const std::string discZid = activePlayerZone("discard");
+    Pile& disc = ensureZonePile(discZid, {2207.f, 1367.f}, "");
+    disc.cards.push_back(gained);
+    queueCardFlight(gained, fromPos, disc.pos, true, true);
+
+    if (isHq) {
+        refillHQ();
+    }
+
+    if (state_.pendingAbilitySourceUid != 0) {
+        state_.abilityUsesThisTurn[state_.pendingAbilitySourceUid] += 1;
+        state_.pendingAbilitySourceUid = 0;
+    }
+    state_.pendingGainCardChoice = false;
+    syncStateFromZones();
+
+    state_.lastActionLog = "Partners in Crime: Gained '" + (d.title.empty() ? d.name : d.title) +
+                           "' directly to your Discard pile!";
+    return state_.lastActionLog;
+}
+
+void Table::toggleCoverMeCard(std::uint32_t cardUid) {
+    if (!state_.pendingCoverMeChoice) return;
+    auto it =
+        std::find(state_.coverMeSelectedUids.begin(), state_.coverMeSelectedUids.end(), cardUid);
+    if (it == state_.coverMeSelectedUids.end()) {
+        state_.coverMeSelectedUids.push_back(cardUid);
+    } else {
+        state_.coverMeSelectedUids.erase(it);
+    }
+}
+
+int Table::selectedCoverMeAttackTotal() const {
+    int total = 0;
+    for (std::uint32_t uid : state_.coverMeSelectedUids) {
+        for (int p = 0; p < state_.playerCount; ++p) {
+            if (p == state_.pendingCoverMeTargetPlayer) continue;
+            const std::string hZid = playerZone(p, "hand");
+            for (const auto& pile : state_.piles) {
+                if (pile.zone == hZid && !pile.cards.empty() && pile.top().uid == uid) {
+                    total += std::max(0, catalog_.card(pile.top().def).attack);
+                }
+            }
+        }
+    }
+    return total;
+}
+
+std::string Table::resolveCoverMeChoice(bool coverAndCancelStrike, std::uint32_t /*seed*/) {
+    if (!state_.pendingCoverMeChoice) return "No Cover Me! Strike choice pending.";
+
+    const int targetP = state_.pendingCoverMeTargetPlayer;
+    CardInst s = state_.pendingCoverMeCard;
+    s.faceUp = true;
+    s.attached = false;
+
+    if (coverAndCancelStrike) {
+        const int selAtk = selectedCoverMeAttackTotal();
+        if (selAtk < 4) {
+            return "Select teammate Attack cards totaling at least 4 /// Attack (currently " +
+                   std::to_string(selAtk) + " ///).";
+        }
+
+        for (std::uint32_t uid : state_.coverMeSelectedUids) {
+            for (int p = 0; p < state_.playerCount; ++p) {
+                if (p == targetP) continue;
+                const std::string hZid = playerZone(p, "hand");
+                const std::string dZid = playerZone(p, "discard");
+                for (size_t i = 0; i < state_.piles.size(); ++i) {
+                    Pile& hp = state_.piles[i];
+                    if (hp.zone == hZid && !hp.cards.empty() && hp.top().uid == uid) {
+                        const Vec2 fromPos = hp.pos;
+                        CardInst disc = hp.top();
+                        hp.cards.pop_back();
+                        if (hp.cards.empty()) {
+                            visuals_.erase(hp.id);
+                            state_.piles.erase(state_.piles.begin() + static_cast<std::ptrdiff_t>(i));
+                        }
+                        disc.faceUp = true;
+                        disc.attached = false;
+                        Pile& discPile = ensureZonePile(dZid, {2207.f, 1367.f}, "");
+                        discPile.cards.push_back(disc);
+                        queueCardFlight(disc, fromPos, discPile.pos, true, true);
+                        reflowZone(hZid);
+                        break;
+                    }
+                }
+            }
+        }
+
+        state_.pendingCoverMeChoice = false;
+        state_.coverMeSelectedUids.clear();
+        Pile& discStrikes = ensureZonePile("discard_strikes", {1846.f, 547.f}, "");
+        discStrikes.cards.push_back(s);
+        queueCardFlight(s, zoneCenterPos("strikes", {1620.f, 550.f}), discStrikes.pos, true, true);
+        syncStateFromZones();
+
+        state_.lastActionLog = "COVER ME! Canceled (4 DMG) — teammates discarded " +
+                               std::to_string(selAtk) + " /// Attack from hand!";
+        recordMove("COVER_ME_CANCELED", "Cover Me!", 1, "strikes", "discard_strikes",
+                   static_cast<int>(discStrikes.cards.size()), true, state_.lastActionLog);
+        return state_.lastActionLog;
+    }
+
+    // Teammates declined to cover -> target player takes the 4-damage Cover Me! Strike
+    state_.pendingCoverMeChoice = false;
+    state_.coverMeSelectedUids.clear();
+
+    const std::string strikeZid = playerZone(targetP, "strikes");
+    Pile& wounds = ensureZonePile(strikeZid, {335.f, layout_.boardSize.y + 185.f}, "");
+    wounds.cards.push_back(s);
+    queueCardFlight(s, zoneCenterPos("strikes", {1620.f, 550.f}), wounds.pos, true, true);
+    syncStateFromZones();
+
+    const PlayerState& ps = state_.players[static_cast<size_t>(targetP)];
+    std::string log = "P" + std::to_string(targetP + 1) + " took COVER ME! (4 dmg -> " +
+                      std::to_string(ps.strikeDamage) + "/" + std::to_string(ps.health) + " HP)!";
+    if (ps.strikeDamage >= ps.health) {
+        if (ps.cannotDieTurnsRemaining > 0) {
+            log += " [Dutch Rare Immunity: Survived fatal damage!]";
+        } else {
+            eliminatePlayer(targetP, log);
+            syncStateFromZones();
+        }
+    }
+    state_.lastActionLog = log;
+    recordMove("COVER_ME_TAKEN", "Cover Me!", 1, "strikes", strikeZid, ps.strikeDamage, true, log);
+    return log;
+}
+
+void Table::applyPlayedCardAbility(int /*defId*/, bool /*classAlreadyPlayed*/,
+                                   bool /*teamAlreadyPlayed*/, int /*otherBarracksChars*/,
+                                   std::uint32_t /*seed*/, std::string& /*logOut*/) {
+    // Passive stats & bonuses are now reactively computed in syncStateFromZones(),
+    // and active/modal card abilities are triggered via activateCardAbility().
 }
 
 std::string Table::playCard(PileId handPileId, std::uint32_t seed) {
@@ -1965,6 +3531,9 @@ std::string Table::playCard(PileId handPileId, std::uint32_t seed) {
     }
     if (state_.phase != TurnPhase::ActionPhase) {
         return "Cards can only be played during the Action Phase.";
+    }
+    if (hasPendingModal()) {
+        return "Resolve the active prompt before playing another card.";
     }
 
     const std::string handZid = activePlayerZone("hand");
@@ -1980,12 +3549,24 @@ std::string Table::playCard(PileId handPileId, std::uint32_t seed) {
     std::string_view ownerRole;
     if (parsePlayerZone(hp->zone, ownerP, ownerRole) && ownerRole == "hand" &&
         ownerP != state_.activePlayer) {
-        if (hasKeyword(catalog_.card(hp->top().def), "Coordinate")) {
+        const bool hasCoord =
+            hasKeyword(catalog_.card(hp->top().def), "Coordinate") ||
+            (ownerP < static_cast<int>(state_.players.size()) &&
+             state_.players[static_cast<size_t>(ownerP)].allHandCoordinateThisTurn);
+        if (hasCoord) {
             return coordinateCard(handPileId, seed);
         }
         return "That card belongs to Player " + std::to_string(ownerP + 1) +
                " (currently Player " + std::to_string(state_.activePlayer + 1) +
                "'s turn — teammates can lend Coordinate cards!).";
+    }
+
+    // If the card is already in Played Area and has an optional ability ready, clicking it activates the ability!
+    if (hp->zone == playedZid) {
+        if (canActivateCardAbility(hp->top().uid)) {
+            return activateCardAbility(hp->top().uid, seed);
+        }
+        return catalog_.card(hp->top().def).name + " is already in your Played Area.";
     }
 
     if (hp->zone != handZid) {
@@ -1995,67 +3576,37 @@ std::string Table::playCard(PileId handPileId, std::uint32_t seed) {
 
     const CardInst card = hp->top();
     const CardDef& d = catalog_.card(card.def);
+    const Vec2 fromPos = hp->pos;
 
     hp->zone = playedZid;
-    state_.accountedPlayedUids.push_back(card.uid);
     reflowZone(handZid);
     reflowZone(playedZid);
-
-    const int gainRec = std::max(0, d.recruit);
-    const int gainAtk = std::max(0, d.attack);
-    state_.recruitPool += gainRec;
-    state_.attackPool += gainAtk;
-
-    const bool classAlreadyPlayed = containsStr(state_.playedClasses, d.classType);
-    const bool teamAlreadyPlayed = containsStr(state_.playedTeams, d.team);
-    const bool isNewBarracksHero =
-        isBarracksCharacterDef(card.def) && !containsStr(state_.playedCharacters, d.subtitle);
-
-    if (!d.classType.empty() && !classAlreadyPlayed) {
-        state_.playedClasses.push_back(d.classType);
-    }
-    if (!d.team.empty() && !teamAlreadyPlayed) {
-        state_.playedTeams.push_back(d.team);
-    }
-    if (isNewBarracksHero && !d.subtitle.empty()) {
-        state_.playedCharacters.push_back(d.subtitle);
+    if (const Pile* afterP = find(handPileId)) {
+        queueCardFlight(card, fromPos, afterP->pos, true, true);
     }
 
-    // Count other unique Barracks characters played this turn for Brothers in Arms (Rulebook p.13)
-    int otherBarracksChars = 0;
-    for (const auto& ch : state_.playedCharacters) {
-        if (ch != d.subtitle) ++otherBarracksChars;
-    }
+    syncStateFromZones();
 
+    int effRec = 0, effAtk = 0;
+    effectiveCardStats(card, &effRec, &effAtk);
     std::string log = "P" + std::to_string(state_.activePlayer + 1) + " played " +
-                      (d.title.empty() ? d.name : d.title) + " (+" + std::to_string(gainRec) +
-                      " Recruit, +" + std::to_string(gainAtk) + " Attack).";
+                      (d.title.empty() ? d.name : d.title) + " (" + std::to_string(effRec) +
+                      " *, " + std::to_string(effAtk) + " ///).";
 
-    applyPlayedCardAbility(card.def, classAlreadyPlayed, teamAlreadyPlayed, otherBarracksChars,
-                           seed, log);
-
-    // Rulebook p.13: Retroactive Brothers in Arms trigger when a new unique Barracks character enters play
-    if (isNewBarracksHero) {
-        for (const auto& p : state_.piles) {
-            if (p.zone != playedZid || p.cards.empty() || p.id == handPileId) continue;
-            const int prevDef = p.top().def;
-            const CardDef& pd = catalog_.card(prevDef);
-            if (pd.subtitle == d.subtitle) continue;
-            if (prevDef == 2) {
-                state_.freeScansAvailable += 1;
-                log += " [Dug In Brothers in Arms: +1 Free Scan!]";
-            } else if (prevDef == 6) {
-                state_.recruitPool += 2;
-                log += " [Before Anybody Knows Brothers in Arms: +2 Recruit!]";
-            } else if (prevDef == 10) {
-                state_.attackPool += 2;
-                log += " [Bad Idea Brothers in Arms: +2 Attack!]";
-            } else if (prevDef == 14) {
-                healPlayerStrikes(state_.activePlayer, 1, false, log);
-            }
+    // Auto-trigger purely beneficial non-modal abilities on explicit play (3, 11, 12, 67, 83, 85, 89, 91, 93)
+    if (card.def == 3 || card.def == 11 || card.def == 12 || card.def == 67 || card.def == 83 ||
+        card.def == 85 || card.def == 89 || card.def == 91 || card.def == 93) {
+        if (canActivateCardAbility(card.uid)) {
+            log += " " + activateCardAbility(card.uid, seed);
+        }
+    } else {
+        std::string abilLabel;
+        if (canActivateCardAbility(card.uid, &abilLabel, nullptr)) {
+            log += " [Optional Ability Ready: " + abilLabel + "]";
         }
     }
 
+    syncStateFromZones();
     state_.lastActionLog = log;
     recordMove("PLAY_CARD", d.title.empty() ? d.name : d.title, 1, handZid, playedZid,
                static_cast<int>(state_.accountedPlayedUids.size()), true, log);
@@ -2068,6 +3619,9 @@ std::string Table::playAllHandCards(std::uint32_t seed) {
     }
     if (state_.phase != TurnPhase::ActionPhase) {
         return "Can only play cards during the Action Phase.";
+    }
+    if (hasPendingModal()) {
+        return "Resolve the active prompt first.";
     }
 
     const std::string handZid = activePlayerZone("hand");
@@ -2096,6 +3650,9 @@ std::string Table::coordinateCard(PileId handPileId, std::uint32_t seed) {
     if (state_.phase != TurnPhase::ActionPhase) {
         return "Coordinate can only be used during the Action Phase.";
     }
+    if (hasPendingModal()) {
+        return "Resolve the active prompt first.";
+    }
 
     Pile* hp = find(handPileId);
     if (!hp || hp->cards.empty()) {
@@ -2108,11 +3665,12 @@ std::string Table::coordinateCard(PileId handPileId, std::uint32_t seed) {
         return "Select a Coordinate card in a player's Hand.";
     }
     if (ownerP < static_cast<int>(state_.players.size()) &&
-        !state_.players[static_cast<size_t>(ownerP)].alive) {
-        return "Eliminated players cannot Coordinate.";
+        (!state_.players[static_cast<size_t>(ownerP)].alive ||
+         state_.players[static_cast<size_t>(ownerP)].escapedInChoppa)) {
+        return "Eliminated or evacuated players cannot Coordinate.";
     }
     if (state_.playerCount > 1 && ownerP == state_.activePlayer) {
-        return "Rulebook p.12: Coordinate lends a card from ANOTHER player's hand to the active player!";
+        return "Rulebook p.12: In multiplayer, Coordinate lends a card from ANOTHER player's hand to the active player!";
     }
     if (ownerP < static_cast<int>(state_.players.size()) &&
         state_.players[static_cast<size_t>(ownerP)].coordinatedThisTurn) {
@@ -2122,13 +3680,25 @@ std::string Table::coordinateCard(PileId handPileId, std::uint32_t seed) {
 
     const CardInst card = hp->top();
     const CardDef& d = catalog_.card(card.def);
-    if (!hasKeyword(d, "Coordinate")) {
+    const bool tempCoord =
+        (ownerP < static_cast<int>(state_.players.size()) &&
+         state_.players[static_cast<size_t>(ownerP)].allHandCoordinateThisTurn);
+    if (!hasKeyword(d, "Coordinate") && !tempCoord) {
         return d.name + " does not have the Coordinate keyword.";
     }
 
-    state_.coordinatedCountThisTurn += 1;
-    if (ownerP < static_cast<int>(state_.players.size())) {
-        state_.players[static_cast<size_t>(ownerP)].coordinatedThisTurn = true;
+    // Solo (1-Player) Call For Backup rule: requires a Call For Backup card in hand/played this turn
+    if (state_.playerCount == 1 && ownerP == state_.activePlayer) {
+        bool hasCallForBackupInTurn = false;
+        for (const auto& tc : collectActiveTurnCards()) {
+            if (tc.uid != card.uid && hasKeyword(catalog_.card(tc.def), "Call For Backup")) {
+                hasCallForBackupInTurn = true;
+                break;
+            }
+        }
+        if (!hasCallForBackupInTurn) {
+            return "Solo 1P Coordinate: You can only Coordinate with yourself when you have a 'Call For Backup' card in your hand/turn!";
+        }
     }
 
     bool worldOfHurtActive = false;
@@ -2140,80 +3710,105 @@ std::string Table::coordinateCard(PileId handPileId, std::uint32_t seed) {
         }
     }
 
+    state_.coordinatedCountThisTurn += 1;
+    if (ownerP < static_cast<int>(state_.players.size())) {
+        state_.players[static_cast<size_t>(ownerP)].coordinatedThisTurn = true;
+    }
+
     const std::string ownerHandZid = playerZone(ownerP, "hand");
     const std::string ownerPlayedZid = playerZone(ownerP, "played");
+    const std::string ownerDiscZid = playerZone(ownerP, "discard");
 
     std::string log;
     if (ownerP == state_.activePlayer) {
-        // Solo 1P fallback
-        log = playCard(handPileId, seed);
-    } else {
-        // Multiplayer Rulebook p.12: Teammate sets card aside in their Played Area, draws 1 replacement,
-        // and active player plays a virtual copy of it!
-        hp->zone = ownerPlayedZid;
+        // Solo 1P Rule: Discard the Coordinate card from hand and draw a replacement card to unlock Call For Backup!
+        const Vec2 fromPos = hp->pos;
+        CardInst disc = hp->top();
+        hp->cards.pop_back();
+        if (hp->cards.empty()) {
+            const int idx = indexOf(hp->id);
+            if (idx >= 0) {
+                visuals_.erase(hp->id);
+                state_.piles.erase(state_.piles.begin() + idx);
+            }
+        }
+        // Remove the discarded Coordinate card's unplayed hand stats before drawing replacement
+        disc.faceUp = true;
+        disc.attached = false;
+        Pile& discPile = ensureZonePile(ownerDiscZid, {2207.f, 1367.f}, "");
+        discPile.cards.push_back(disc);
+        queueCardFlight(disc, fromPos, discPile.pos, true, true);
         reflowZone(ownerHandZid);
-        reflowZone(ownerPlayedZid);
 
-        const int gainRec = std::max(0, d.recruit);
-        const int gainAtk = std::max(0, d.attack);
-        state_.recruitPool += gainRec;
-        state_.attackPool += gainAtk;
-
-        const bool classAlreadyPlayed = containsStr(state_.playedClasses, d.classType);
-        const bool teamAlreadyPlayed = containsStr(state_.playedTeams, d.team);
-        const bool isNewBarracksHero =
-            isBarracksCharacterDef(card.def) && !containsStr(state_.playedCharacters, d.subtitle);
-
-        if (!d.classType.empty() && !classAlreadyPlayed) {
-            state_.playedClasses.push_back(d.classType);
+        if (!worldOfHurtActive) {
+            drawPlayerCards(ownerP, 1, seed + 99u, log);
+            log = "[SOLO 1P COORDINATE] Discarded " + (d.title.empty() ? d.name : d.title) +
+                  " and drew 1 replacement card -> Call For Backup unlocked!";
+        } else {
+            log = "[SOLO 1P COORDINATE] Discarded " + (d.title.empty() ? d.name : d.title) +
+                  " (A World of Hurt blocked replacement draw) -> Call For Backup unlocked!";
         }
-        if (!d.team.empty() && !teamAlreadyPlayed) {
-            state_.playedTeams.push_back(d.team);
-        }
-        if (isNewBarracksHero && !d.subtitle.empty()) {
-            state_.playedCharacters.push_back(d.subtitle);
-        }
+        syncStateFromZones();
+        state_.lastActionLog = log;
+        recordMove("COORDINATE_1P", d.title.empty() ? d.name : d.title, 1, ownerHandZid,
+                   ownerDiscZid, static_cast<int>(discPile.cards.size()), true, log);
+        return log;
+    }
 
-        int otherBarracksChars = 0;
-        for (const auto& ch : state_.playedCharacters) {
-            if (ch != d.subtitle) ++otherBarracksChars;
-        }
+    // Multiplayer (2-5P) Rulebook p.12:
+    // Teammate sets card aside in their Played Area, draws 1 replacement,
+    // and Active Player gains a virtual copy in state_.coordinatedCards (providing stats, class, team, character & ability)!
+    const Vec2 fromPos = hp->pos;
+    hp->zone = ownerPlayedZid;
+    reflowZone(ownerHandZid);
+    reflowZone(ownerPlayedZid);
+    if (const Pile* afterP = find(handPileId)) {
+        queueCardFlight(card, fromPos, afterP->pos, true, true);
+    }
 
-        log = "P" + std::to_string(state_.activePlayer + 1) + " gained virtual copy of " +
-              (d.title.empty() ? d.name : d.title) + " (+" + std::to_string(gainRec) +
-              " Recruit, +" + std::to_string(gainAtk) + " Attack).";
-        applyPlayedCardAbility(card.def, classAlreadyPlayed, teamAlreadyPlayed, otherBarracksChars,
-                               seed, log);
+    CardInst virtualCopy;
+    virtualCopy.uid = state_.nextUid++;
+    virtualCopy.def = card.def;
+    virtualCopy.faceUp = true;
+    virtualCopy.attached = false;
+    state_.coordinatedCards.push_back(virtualCopy);
+
+    if (!d.classType.empty() && !containsStr(state_.coordinatedClasses, d.classType)) {
+        state_.coordinatedClasses.push_back(d.classType);
+    }
+    if (!d.team.empty() && !containsStr(state_.coordinatedTeams, d.team)) {
+        state_.coordinatedTeams.push_back(d.team);
+    }
+    if (isBarracksCharacterDef(card.def) && !d.subtitle.empty() &&
+        !containsStr(state_.coordinatedCharacters, d.subtitle)) {
+        state_.coordinatedCharacters.push_back(d.subtitle);
     }
 
     if (!worldOfHurtActive) {
         drawPlayerCards(ownerP, 1, seed + 99u, log);
         log = "[COORDINATE P" + std::to_string(ownerP + 1) + " -> P" +
-              std::to_string(state_.activePlayer + 1) + "] Lent " + d.name +
-              ", P" + std::to_string(ownerP + 1) + " drew 1 replacement! " + log;
+              std::to_string(state_.activePlayer + 1) + "] Lent " +
+              (d.title.empty() ? d.name : d.title) + " (P" + std::to_string(ownerP + 1) +
+              " drew 1 replacement)!";
     } else {
         log = "[COORDINATE P" + std::to_string(ownerP + 1) + " -> P" +
-              std::to_string(state_.activePlayer + 1) + "] Lent " + d.name +
-              " (A World of Hurt blocked replacement draw). " + log;
+              std::to_string(state_.activePlayer + 1) + "] Lent " +
+              (d.title.empty() ? d.name : d.title) +
+              " (A World of Hurt blocked replacement draw)!";
     }
 
-    // Retroactive Call For Backup triggers if active player already played their Role card earlier this turn
-    const std::string activePlayedZid = activePlayerZone("played");
-    std::vector<int> activeRoleDefs;
-    for (const auto& p : state_.piles) {
-        if (p.zone == activePlayedZid && !p.cards.empty()) {
-            const int rDef = p.top().def;
-            if (rDef >= 65 && rDef <= 83 && (rDef % 2 == 1)) {
-                activeRoleDefs.push_back(rDef);
-            }
-        }
-    }
-    if (state_.coordinatedCountThisTurn == 1) {
-        for (int rDef : activeRoleDefs) {
-            applyPlayedCardAbility(rDef, false, false, 0, seed + 131u, log);
+    syncStateFromZones();
+
+    // Auto-trigger purely beneficial instant ability on the coordinated copy if applicable
+    if (virtualCopy.def == 3 || virtualCopy.def == 11 || virtualCopy.def == 12 ||
+        virtualCopy.def == 67 || virtualCopy.def == 83 || virtualCopy.def == 85 ||
+        virtualCopy.def == 89 || virtualCopy.def == 91 || virtualCopy.def == 93) {
+        if (canActivateCardAbility(virtualCopy.uid)) {
+            log += " " + activateCardAbility(virtualCopy.uid, seed + 53u);
         }
     }
 
+    syncStateFromZones();
     state_.lastActionLog = log;
     recordMove("COORDINATE", d.title.empty() ? d.name : d.title, 1, ownerHandZid, ownerPlayedZid,
                1, true, log);
@@ -2223,6 +3818,9 @@ std::string Table::coordinateCard(PileId handPileId, std::uint32_t seed) {
 std::string Table::recruitCard(PileId targetPileId, std::uint32_t /*seed*/) {
     if (state_.phase != TurnPhase::ActionPhase) {
         return "Recruiting is only allowed during the Action Phase.";
+    }
+    if (hasPendingModal()) {
+        return "Resolve the active prompt first.";
     }
     Pile* p = find(targetPileId);
     if (!p || p->cards.empty()) return "No card to recruit.";
@@ -2243,7 +3841,11 @@ std::string Table::recruitCard(PileId targetPileId, std::uint32_t /*seed*/) {
         return state_.lastActionLog;
     }
 
+    std::string autoPlayLog;
+    autoPlayHandCardsForRecruit(cost, autoPlayLog);
+
     const std::string srcZone = p->zone;
+    const Vec2 fromPos = p->pos;
     state_.recruitPool -= cost;
     CardInst recruited = p->cards.back();
     p->cards.pop_back();
@@ -2261,6 +3863,7 @@ std::string Table::recruitCard(PileId targetPileId, std::uint32_t /*seed*/) {
     const std::string discZid = activePlayerZone("discard");
     Pile& discard = ensureZonePile(discZid, {2207.f, 1367.f}, "");
     discard.cards.push_back(recruited);
+    queueCardFlight(recruited, fromPos, discard.pos, true, true);
     const int discCount = static_cast<int>(discard.cards.size());
 
     // Rulebook p.9: Immediately refill any empty HQ space with the top card of the Barracks
@@ -2271,7 +3874,7 @@ std::string Table::recruitCard(PileId targetPileId, std::uint32_t /*seed*/) {
     state_.lastActionLog = "P" + std::to_string(state_.activePlayer + 1) + " recruited " +
                            catalog_.card(recruited.def).name + " for " + std::to_string(cost) +
                            " * -> placed in P" + std::to_string(state_.activePlayer + 1) +
-                           " Discard (HQ refilled).";
+                           " Discard (HQ refilled)." + autoPlayLog;
     recordMove("RECRUIT_CARD", catalog_.card(recruited.def).name, 1, srcZone, discZid, discCount,
                true, state_.lastActionLog);
     return state_.lastActionLog;
@@ -2280,6 +3883,9 @@ std::string Table::recruitCard(PileId targetPileId, std::uint32_t /*seed*/) {
 std::string Table::scanWilds(PileId targetPileId, std::uint32_t seed) {
     if (state_.phase != TurnPhase::ActionPhase) {
         return "Scanning is only allowed during the Action Phase.";
+    }
+    if (hasPendingModal()) {
+        return "Resolve the active prompt first.";
     }
     Pile* p = find(targetPileId);
     if (!p || p->cards.empty()) return "No card in that space.";
@@ -2290,10 +3896,13 @@ std::string Table::scanWilds(PileId targetPileId, std::uint32_t seed) {
 
     const int cost = scanCostForZone(p->zone);
     bool usedFreeScan = false;
+    std::string autoPlayLog;
     if (state_.freeScansAvailable > 0) {
+        autoPlayHandCardMatchingDef(2, autoPlayLog); // Dug In Like An Alabama Tick
         state_.freeScansAvailable -= 1;
         usedFreeScan = true;
     } else if (state_.attackPool >= cost) {
+        autoPlayHandCardsForAttack(cost, autoPlayLog);
         state_.attackPool -= cost;
     } else {
         state_.lastActionLog = "Need " + std::to_string(cost) + " Attack /// to scan " +
@@ -2308,9 +3917,9 @@ std::string Table::scanWilds(PileId targetPileId, std::uint32_t seed) {
     visual(p->id).flipT = 0.f;
 
     std::string log = usedFreeScan
-                          ? ("Scanned " + std::string(wildsName(wIdx)) + " (Free Scan)!")
+                          ? ("Scanned " + std::string(wildsName(wIdx)) + " (Free Scan)!" + autoPlayLog)
                           : ("Scanned " + std::string(wildsName(wIdx)) + " for " +
-                             std::to_string(cost) + " Attack ///!");
+                             std::to_string(cost) + " Attack ///!" + autoPlayLog);
     onCardRevealedInWilds(p->id, wIdx, seed, log);
     state_.lastActionLog = log;
     recordMove("SCAN_WILDS", catalog_.card(scannedDef).name, 1, scannedZone, scannedZone, 1, true,
@@ -2325,14 +3934,18 @@ std::string Table::completeObjective2() {
         return state_.lastActionLog;
     }
 
+    std::string autoPlayLog;
+    autoPlayHandCardsForRecruit(6, autoPlayLog);
     state_.recruitPool -= 6;
     state_.defensivePositionAttachedToHills = true;
 
     // Move Defensive Position (def 107) from Operations ("testing") and attach it to Hills ("wilds_0")!
     std::optional<CardInst> defPosCard;
+    Vec2 fromPos{1112.f, 185.f};
     for (size_t i = 0; i < state_.piles.size(); ++i) {
         Pile& ops = state_.piles[i];
         if (ops.zone == "testing" && !ops.cards.empty() && ops.top().def == 107) {
+            fromPos = ops.pos;
             defPosCard = ops.cards.back();
             ops.cards.pop_back();
             if (ops.cards.empty()) {
@@ -2344,11 +3957,13 @@ std::string Table::completeObjective2() {
     }
     if (defPosCard) {
         attachCardToWildsSlot(0, *defPosCard);
+        queueCardFlight(*defPosCard, fromPos, zoneCenterPos("wilds_0", {411.f, 550.f}), true, true);
     }
 
     advanceObjectiveStack();
     state_.lastActionLog =
-        "OBJECTIVE 2 COMPLETE! Defensive Position attached to Hills (auto-scans Hills). Now on Objective 3: Get to the Choppa!";
+        "OBJECTIVE 2 COMPLETE! Defensive Position attached to Hills (auto-scans Hills). Now on Objective 3: Get to the Choppa!" +
+        autoPlayLog;
     recordMove("COMPLETE_OBJ_2", "Defensive Position", 1, "testing", "wilds_0", 1, true,
                state_.lastActionLog);
     return state_.lastActionLog;
@@ -2357,6 +3972,9 @@ std::string Table::completeObjective2() {
 std::string Table::fightEnemy(PileId targetPileId, std::uint32_t seed) {
     if (state_.phase != TurnPhase::ActionPhase) {
         return "Fighting enemies is only allowed during the Action Phase.";
+    }
+    if (hasPendingModal()) {
+        return "Resolve the active prompt first.";
     }
     Pile* p = find(targetPileId);
     if (!p || p->cards.empty() || !p->top().faceUp) {
@@ -2389,6 +4007,97 @@ std::string Table::fightEnemy(PileId targetPileId, std::uint32_t seed) {
         return state_.lastActionLog;
     }
 
+    // Objective 3 Minor Goal: The Choppa! (def 114, cost 3 * Recruit in Combat Zone)
+    if (target.def == 114) {
+        if (!inCombat) {
+            state_.lastActionLog =
+                "The Choppa! can only be boarded once it enters the Combat Zone!";
+            return state_.lastActionLog;
+        }
+        const int choppaCost = std::max(0, d.cost); // 3 *
+        if (state_.recruitPool < choppaCost) {
+            state_.lastActionLog = "Need " + std::to_string(choppaCost) +
+                                   " Recruit * to evacuate aboard The Choppa! (have " +
+                                   std::to_string(state_.recruitPool) + " *).";
+            return state_.lastActionLog;
+        }
+
+        std::string autoPlayLog;
+        autoPlayHandCardsForRecruit(choppaCost, autoPlayLog);
+        state_.recruitPool -= choppaCost;
+
+        const int ap = state_.activePlayer;
+        std::string log = "P" + std::to_string(ap + 1) + " paid " + std::to_string(choppaCost) +
+                          " * Recruit to board The Choppa!!" + autoPlayLog;
+
+        int enemiesInCombat = 0;
+        for (const auto& cp : state_.piles) {
+            if (cp.zone == "combat" && !cp.cards.empty() && cp.top().def != 114) {
+                ++enemiesInCombat;
+            }
+        }
+        for (int i = 0; i < enemiesInCombat; ++i) {
+            drawStrikeAgainstPlayer(ap, seed + static_cast<std::uint32_t>(i), log);
+            if (state_.phase == TurnPhase::Defeat ||
+                !state_.players[static_cast<size_t>(ap)].alive) {
+                break;
+            }
+        }
+
+        if (state_.phase != TurnPhase::Defeat &&
+            ap < static_cast<int>(state_.players.size()) &&
+            state_.players[static_cast<size_t>(ap)].alive) {
+            state_.players[static_cast<size_t>(ap)].escapedInChoppa = true;
+
+            // Place the player's Avatar beneath The Choppa!
+            if (Pile* av = findZonePile(playerZone(ap, "avatar")); av && !av->cards.empty()) {
+                const Vec2 avPos = av->pos;
+                CardInst avCard = av->cards.back();
+                av->cards.pop_back();
+                if (av->cards.empty()) {
+                    const int avIdx = indexOf(av->id);
+                    if (avIdx >= 0) {
+                        visuals_.erase(av->id);
+                        state_.piles.erase(state_.piles.begin() + avIdx);
+                    }
+                }
+                avCard.faceUp = true;
+                avCard.attached = true;
+                if (Pile* choppaPile = find(targetPileId)) {
+                    choppaPile->cards.insert(choppaPile->cards.begin(), avCard);
+                    queueCardFlight(avCard, avPos, choppaPile->pos, true, true);
+                }
+            }
+
+            bool allLivingEscaped = true;
+            int escapedCount = 0;
+            for (const auto& ps : state_.players) {
+                if (ps.alive) {
+                    if (ps.escapedInChoppa) {
+                        ++escapedCount;
+                    } else {
+                        allLivingEscaped = false;
+                    }
+                }
+            }
+
+            if (allLivingEscaped) {
+                state_.phase = TurnPhase::Victory;
+                log += " [MINOR VICTORY! All surviving operatives (" +
+                       std::to_string(std::max(1, escapedCount)) +
+                       ") evacuated aboard The Choppa! (Score: " +
+                       std::to_string(std::max(1, escapedCount)) + " pts)]";
+            } else {
+                log += " [P" + std::to_string(ap + 1) +
+                       " is safely aboard The Choppa! Remaining operatives must also board The Choppa! to complete Objective 3!]";
+            }
+        }
+        syncStateFromZones();
+        state_.lastActionLog = log;
+        recordMove("BOARD_CHOPPA", d.name, 1, "combat", "combat", 1, true, log);
+        return log;
+    }
+
     // Rulebook p.12: Final Enemy (One Ugly Mother def 121) can only be fought after Objective 2 is complete
     if (target.def == 121 && state_.currentObjective < 3) {
         state_.lastActionLog =
@@ -2403,12 +4112,14 @@ std::string Table::fightEnemy(PileId targetPileId, std::uint32_t seed) {
 
     // Special case: Something in Those Trees (def 118) is fought with Recruit Points outside River (wilds_2)
     const bool useRecruitToFight = (target.def == 118 && p->zone != "wilds_2");
+    std::string autoPlayLog;
     if (useRecruitToFight) {
         if (state_.recruitPool < reqAtk) {
             state_.lastActionLog = d.name + " outside the River requires " +
                                    std::to_string(reqAtk) + " Recruit * to fight!";
             return state_.lastActionLog;
         }
+        autoPlayHandCardsForRecruit(reqAtk, autoPlayLog);
         state_.recruitPool -= reqAtk;
     } else {
         if (state_.attackPool < reqAtk) {
@@ -2416,15 +4127,20 @@ std::string Table::fightEnemy(PileId targetPileId, std::uint32_t seed) {
                                    d.name + " (have " + std::to_string(state_.attackPool) + " ///).";
             return state_.lastActionLog;
         }
+        autoPlayHandCardsForAttack(reqAtk, autoPlayLog);
         state_.attackPool -= reqAtk;
     }
 
+    p = find(targetPileId);
+    if (!p || p->cards.empty()) return "Target pile no longer exists.";
+
     std::string log = "Defeated " + d.name + " (" + std::to_string(reqAtk) +
-                      (useRecruitToFight ? " *" : " ///") + " spent)!";
+                      (useRecruitToFight ? " *" : " ///") + " spent)!" + autoPlayLog;
 
     // Objective 1 Goal: Guerrilla Camp (def 102) -> Discard to Discarded Events ("discard_hazards")!
     if (target.def == 102) {
         const std::string fromWilds = p->zone;
+        const Vec2 fromPos = p->pos;
         CardInst wiped = target;
         wiped.attached = false;
         wiped.faceUp = true;
@@ -2439,43 +4155,20 @@ std::string Table::fightEnemy(PileId targetPileId, std::uint32_t seed) {
         }
         Pile& disc = ensureZonePile("discard_hazards", {2150.f, 545.f}, "Discarded Hazards/Events");
         disc.cards.push_back(wiped);
+        queueCardFlight(wiped, fromPos, disc.pos, true, true);
         if (state_.currentObjective == 1) {
             advanceObjectiveStack();
             log = "OBJECTIVE 1 COMPLETE! Wiped out the Guerrilla Camp (1 /// Attack on clear " +
                   std::string(wildsName(wIdx)) +
-                  ") -> Discarded Events! Now on Objective 2: Flares, Frags, and Claymores.";
+                  ") -> Discarded Events! Now on Objective 2: Flares, Frags, and Claymores." +
+                  autoPlayLog;
         } else {
-            log = "Wiped out the Guerrilla Camp (1 /// Attack) -> moved to Discarded Events!";
+            log = "Wiped out the Guerrilla Camp (1 /// Attack) -> moved to Discarded Events!" +
+                  autoPlayLog;
         }
         state_.lastActionLog = log;
         recordMove("WIPE_OUT_CAMP", d.name, 1, fromWilds, "discard_hazards",
                    static_cast<int>(disc.cards.size()), true, log);
-        return log;
-    }
-
-    // Objective 3 Minor Goal: The Choppa! (def 114)
-    if (target.def == 114) {
-        int enemiesInCombat = 0;
-        for (const auto& cp : state_.piles) {
-            if (cp.zone == "combat" && !cp.cards.empty() && cp.top().def != 114) {
-                ++enemiesInCombat;
-            }
-        }
-        for (int i = 0; i < enemiesInCombat; ++i) {
-            drawStrikeAgainstPlayer(state_.activePlayer,
-                                    seed + static_cast<std::uint32_t>(i), log);
-            if (state_.phase == TurnPhase::Defeat) break;
-        }
-        if (state_.phase != TurnPhase::Defeat) {
-            int livingPlayers = 0;
-            for (const auto& ps : state_.players) {
-                if (ps.alive) ++livingPlayers;
-            }
-            state_.phase = TurnPhase::Victory;
-            log = "MINOR VICTORY! Evacuated aboard The Choppa! (Score: " +
-                  std::to_string(std::max(1, livingPlayers)) + " pts)";
-        }
-        state_.lastActionLog = log;
         return log;
     }
 
@@ -2486,6 +4179,7 @@ std::string Table::fightEnemy(PileId targetPileId, std::uint32_t seed) {
             // "Ongoing: If you would kill this Enemy while Marked, destroy a Mark instead."
             const std::string marksZid = activePlayerZone("marks");
             if (Pile* marks = findZonePile(marksZid); marks && !marks->cards.empty()) {
+                const Vec2 mFrom = marks->pos;
                 CardInst m = marks->cards.back();
                 marks->cards.pop_back();
                 if (marks->cards.empty()) {
@@ -2498,41 +4192,85 @@ std::string Table::fightEnemy(PileId targetPileId, std::uint32_t seed) {
                 Pile& disc =
                     ensureZonePile("discard_hazards", {2150.f, 545.f}, "Discarded Hazards/Events");
                 disc.cards.push_back(m);
+                queueCardFlight(m, mFrom, disc.pos, true, true);
             } else if (state_.activePlayer < static_cast<int>(state_.players.size())) {
                 state_.players[static_cast<size_t>(state_.activePlayer)].manualMarksOffset -= 1;
             }
             syncStateFromZones();
             log = "Fought One Ugly Mother while Marked -> destroyed 1 Mark (" +
                   std::to_string(state_.marksCount) +
-                  " remaining)! Attack again with 0 Marks to kill him!";
+                  " remaining)! Attack again with 0 Marks to kill him!" + autoPlayLog;
             state_.lastActionLog = log;
             return log;
         }
 
-        // Remove Final Enemy -> MAJOR VICTORY!
-        p->cards.pop_back();
-        if (p->cards.empty()) {
-            const int idx = indexOf(p->id);
-            if (idx >= 0) {
-                visuals_.erase(p->id);
-                state_.piles.erase(state_.piles.begin() + idx);
+        // Check if Three Hundred City Blocks (def 115) is attached to One Ugly Mother!
+        bool hasThreeHundredAttached = state_.threeHundredCityBlocksAttachedToFinalEnemy;
+        for (const auto& c : p->cards) {
+            if (c.def == 115) {
+                hasThreeHundredAttached = true;
+                break;
             }
         }
+
+        const Vec2 fromPos = p->pos;
+        std::vector<CardInst> attached115;
+        for (const auto& c : p->cards) {
+            if (c.def == 115) attached115.push_back(c);
+        }
+        const int idx = indexOf(p->id);
+        if (idx >= 0) {
+            visuals_.erase(p->id);
+            state_.piles.erase(state_.piles.begin() + idx);
+        }
+
         Pile& deadPrey = ensureZonePile("dead_prey", {1950.f, 220.f}, "");
-        deadPrey.cards.push_back(target);
+        CardInst deadBoss = target;
+        deadBoss.attached = false;
+        deadPrey.cards.push_back(deadBoss);
+        queueCardFlight(deadBoss, fromPos, deadPrey.pos, true, true);
+
+        if (!attached115.empty()) {
+            Pile& discHaz =
+                ensureZonePile("discard_hazards", {2150.f, 545.f}, "Discarded Hazards/Events");
+            for (auto c115 : attached115) {
+                c115.attached = false;
+                c115.faceUp = true;
+                discHaz.cards.push_back(c115);
+            }
+        }
+        state_.threeHundredCityBlocksAttachedToFinalEnemy = false;
+
+        if (hasThreeHundredAttached) {
+            // "Ongoing: When you kill the Final Enemy, you must pay 4 * or die."
+            if (state_.recruitPool >= 4) {
+                std::string extraRecLog;
+                autoPlayHandCardsForRecruit(4, extraRecLog);
+                state_.recruitPool -= 4;
+                log += " [Three Hundred City Blocks: Paid 4 * Recruit to escape the blast radius!]" +
+                       extraRecLog;
+            } else {
+                log += " [Three Hundred City Blocks: Could not pay 4 * Recruit -> caught in the blast!]";
+                eliminatePlayer(state_.activePlayer, log);
+            }
+        }
+
         int livingPlayers = 0;
         for (const auto& ps : state_.players) {
             if (ps.alive) ++livingPlayers;
         }
-        state_.phase = TurnPhase::Victory;
-        state_.lastActionLog =
-            "MAJOR VICTORY! You killed One Ugly Mother and completed Objective 3! (Score: " +
-            std::to_string(5 + std::max(1, livingPlayers)) + " pts)";
+        if (livingPlayers > 0 && state_.phase != TurnPhase::Defeat) {
+            state_.phase = TurnPhase::Victory;
+            log += " MAJOR VICTORY! You killed One Ugly Mother and completed Objective 3! (Score: " +
+                   std::to_string(5 + std::max(1, livingPlayers)) + " pts)";
+        }
+        state_.lastActionLog = log;
         return state_.lastActionLog;
     }
 
     // Remove killed enemy from board (preserving any attached card underneath!) and move to Dead Enemies
     const std::string killedFromZone = inCombat ? "combat" : ("wilds_" + std::to_string(wIdx));
+    const Vec2 fromPos = p->pos;
     p->cards.pop_back();
     if (p->cards.empty()) {
         const int idx = indexOf(p->id);
@@ -2545,6 +4283,7 @@ std::string Table::fightEnemy(PileId targetPileId, std::uint32_t seed) {
     deadEnemy.attached = false;
     Pile& deadPrey = ensureZonePile("dead_prey", {1950.f, 220.f}, "");
     deadPrey.cards.push_back(deadEnemy);
+    queueCardFlight(deadEnemy, fromPos, deadPrey.pos, true, true);
     const int deadPreyCount = static_cast<int>(deadPrey.cards.size());
 
     // Mac 1 Rare (Gonna Have Me Some Fun): Draw 2 cards each time you kill an Enemy this turn
@@ -2553,6 +4292,33 @@ std::string Table::fightEnemy(PileId targetPileId, std::uint32_t seed) {
         log += " [Gonna Have Me Some Fun: Drew " + std::to_string(state_.drawCardsOnKill) +
                " cards!]";
     }
+
+    // Helper lambda to open mandatory cost>=1 kill modal for Nothing On Earth (117) and A Fitting Demise (210)
+    auto triggerMandatoryCost1Kill = [&](int killReq, const std::string& reasonLabel) {
+        if (killReq <= 0) return;
+        const std::string handZid = activePlayerZone("hand");
+        const std::string playedZid = activePlayerZone("played");
+        int eligibleCount = 0;
+        for (const auto& cp : state_.piles) {
+            if ((cp.zone == handZid || cp.zone == playedZid) && !cp.cards.empty() &&
+                !isCardKilledInPlayed(cp.top().uid) &&
+                catalog_.card(cp.top().def).cost >= 1) {
+                ++eligibleCount;
+            }
+        }
+        if (eligibleCount <= 0) {
+            log += " [" + reasonLabel + ": You have no cards costing 1 or more in Hand/Played Area.]";
+            return;
+        }
+        state_.pendingKillChoice = true;
+        state_.pendingKillCount = std::min(killReq, eligibleCount);
+        state_.pendingKillMinCost = 1;
+        state_.pendingKillMandatory = true;
+        state_.pendingKillStayUntilCleanup = false;
+        state_.pendingAbilitySourceUid = 0;
+        log += " [" + reasonLabel + ": Choose " + std::to_string(state_.pendingKillCount) +
+               " of your card(s) with cost >= 1 to kill!]";
+    };
 
     // --- Enemy Death Triggers ---
     switch (target.def) {
@@ -2565,6 +4331,7 @@ std::string Table::fightEnemy(PileId targetPileId, std::uint32_t seed) {
             for (size_t ci = 0; ci < wp->cards.size(); ++ci) {
                 if (wp->cards[ci].def == 102 && wp->cards[ci].faceUp) {
                     campInWilds = true;
+                    const Vec2 campFrom = wp->pos;
                     CardInst camp = wp->cards[ci];
                     wp->cards.erase(wp->cards.begin() + static_cast<std::ptrdiff_t>(ci));
                     if (wp->cards.empty()) {
@@ -2576,6 +4343,8 @@ std::string Table::fightEnemy(PileId targetPileId, std::uint32_t seed) {
                     }
                     if (s > 0) {
                         attachCardToWildsSlot(s - 1, camp);
+                        queueCardFlight(camp, campFrom,
+                                        zoneCenterPos("wilds_" + std::to_string(s - 1)), true, true);
                         log += " [Death: Guerrilla Camp moved left from " +
                                std::string(wildsName(s)) + " to " +
                                std::string(wildsName(s - 1)) + "!]";
@@ -2586,6 +4355,7 @@ std::string Table::fightEnemy(PileId targetPileId, std::uint32_t seed) {
                         Pile& disc = ensureZonePile("discard_hazards", {2150.f, 545.f},
                                                     "Discarded Hazards/Events");
                         disc.cards.push_back(camp);
+                        queueCardFlight(camp, campFrom, disc.pos, true, true);
                         if (state_.currentObjective == 1) {
                             advanceObjectiveStack();
                             log += " [Death: Guerrilla Camp moved left from Hills into Combat Zone -> Discarded Events & OBJECTIVE 1 COMPLETE!]";
@@ -2604,35 +4374,51 @@ std::string Table::fightEnemy(PileId targetPileId, std::uint32_t seed) {
         }
         break;
     }
-    case 208: // Young Blood: Defensive Adaptations (unless Tech played, draw 2 fewer cards)
-        if (!containsStr(state_.playedClasses, "Tech")) {
+    case 117: // Nothing On Earth: Death: For each Mark you have, kill one of your cards that costs 1 or more
+        syncStateFromZones();
+        if (state_.marksCount > 0) {
+            triggerMandatoryCost1Kill(state_.marksCount, "Nothing On Earth Death");
+        }
+        break;
+    case 208: // Young Blood: Defensive Adaptations (unless Tech in hand/played, draw 2 fewer cards)
+        if (!containsStr(state_.roundHandClasses, "Tech") &&
+            !containsStr(state_.playedClasses, "Tech")) {
             if (state_.activePlayer < static_cast<int>(state_.players.size())) {
                 state_.players[static_cast<size_t>(state_.activePlayer)].nextHandSizePenalty += 2;
             }
             state_.nextHandSizePenalty += 2;
-            log += " [Death: No Tech card played -> draw 2 fewer cards in Cleanup!]";
+            log += " [Death: No Tech card in hand/turn -> draw 2 fewer cards in Cleanup!]";
         }
         break;
-    case 209: // Young Blood: The Eyes of the Demon (unless Strength played, draw a Strike)
-        if (!containsStr(state_.playedClasses, "Strength")) {
-            log += " [Death: No Strength card played -> Draw a Strike!]";
+    case 209: // Young Blood: The Eyes of the Demon (unless Survival in hand/played, draw a Strike)
+        if (!containsStr(state_.roundHandClasses, "Survival") &&
+            !containsStr(state_.playedClasses, "Survival")) {
+            log += " [Death: No Survival card in hand/turn -> Draw a Strike!]";
             drawStrikeAgainstPlayer(state_.activePlayer, seed + 73u, log);
         }
         break;
-    case 211: // Young Blood: Something Out There Waiting For Us (unless Survival played, add Enemy)
-        if (!containsStr(state_.playedClasses, "Survival")) {
+    case 210: // Young Blood: A Fitting Demise (unless Leadership in hand/played, kill one of your cards costing >= 1)
+        if (!containsStr(state_.roundHandClasses, "Leadership") &&
+            !containsStr(state_.playedClasses, "Leadership")) {
+            triggerMandatoryCost1Kill(1, "A Fitting Demise Death");
+        }
+        break;
+    case 211: // Young Blood: Something Out There Waiting For Us (unless Strength in hand/played, add Enemy)
+        if (!containsStr(state_.roundHandClasses, "Strength") &&
+            !containsStr(state_.playedClasses, "Strength")) {
             if (Pile* prey = findZonePile("prey"); prey && !prey->cards.empty()) {
                 CardInst c = prey->cards.back();
                 prey->cards.pop_back();
                 c.faceUp = false;
                 c.attached = false;
-                log += " [Death: No Survival card played -> Added Enemy to Wilds!]";
+                log += " [Death: No Strength card in hand/turn -> Added Enemy to Wilds!]";
                 pushCardIntoWildsSlot(4, c, seed + 79u, log);
             }
         }
         break;
-    case 212: // Young Blood: Fun and Games (unless Intel played, turn unattached Wilds enemies face-down)
-        if (!containsStr(state_.playedClasses, "Intel")) {
+    case 212: // Young Blood: Fun and Games (unless Intel in hand/played, turn unattached Wilds enemies face-down)
+        if (!containsStr(state_.roundHandClasses, "Intel") &&
+            !containsStr(state_.playedClasses, "Intel")) {
             for (int s = 0; s <= 4; ++s) {
                 if (Pile* wp = findZonePile("wilds_" + std::to_string(s));
                     wp && !wp->cards.empty() && !wp->top().attached && wp->top().faceUp &&
@@ -2641,13 +4427,14 @@ std::string Table::fightEnemy(PileId targetPileId, std::uint32_t seed) {
                     visual(wp->id).flipT = 0.f;
                 }
             }
-            log += " [Death: No Intel card played -> Wilds enemies turned face-down!]";
+            log += " [Death: No Intel card in hand/turn -> Wilds enemies turned face-down!]";
         }
         break;
     default:
         break;
     }
 
+    syncStateFromZones();
     state_.lastActionLog = log;
     recordMove("FIGHT_ENEMY", d.name, 1, killedFromZone, "dead_prey", deadPreyCount, true, log);
     return log;
@@ -2658,7 +4445,14 @@ void Table::eliminatePlayer(int playerIdx, std::string& logOut) {
     PlayerState& ps = state_.players[static_cast<size_t>(playerIdx)];
     if (!ps.alive) return;
 
+    if (ps.cannotDieTurnsRemaining > 0) {
+        logOut += " [Dutch Rare Immunity: P" + std::to_string(playerIdx + 1) +
+                  " cannot die — death effect ignored!]";
+        return;
+    }
+
     ps.alive = false;
+    ps.activeImmunityCardUid = 0;
 
     // Flip Avatar face-down to mark KIA
     if (Pile* av = findZonePile(playerZone(playerIdx, "avatar"))) {
@@ -2668,6 +4462,7 @@ void Table::eliminatePlayer(int playerIdx, std::string& logOut) {
 
     // Rulebook p.15: Move fallen player's Strikes to Discarded Strikes, Marks to Discarded Hazards,
     // and Hand/Played/Deck/Discard cards to Dead Characters
+    bool hasWholeNewLevelOfPain = false;
     std::vector<CardInst> toDiscStrikes, toDiscHazards, toDeadChars;
     const std::string strikeZid = playerZone(playerIdx, "strikes");
     const std::string markZid = playerZone(playerIdx, "marks");
@@ -2679,6 +4474,7 @@ void Table::eliminatePlayer(int playerIdx, std::string& logOut) {
     for (auto& p : state_.piles) {
         if (p.zone == strikeZid) {
             for (auto c : p.cards) {
+                if (c.def == 187) hasWholeNewLevelOfPain = true;
                 c.faceUp = true;
                 toDiscStrikes.push_back(c);
             }
@@ -2716,10 +4512,16 @@ void Table::eliminatePlayer(int playerIdx, std::string& logOut) {
     reflowZone(playedZid);
 
     bool anyAlive = false;
+    bool allRemainingEscaped = true;
+    int escapedCount = 0;
     for (const auto& other : state_.players) {
         if (other.alive) {
             anyAlive = true;
-            break;
+            if (other.escapedInChoppa) {
+                ++escapedCount;
+            } else {
+                allRemainingEscaped = false;
+            }
         }
     }
 
@@ -2728,20 +4530,45 @@ void Table::eliminatePlayer(int playerIdx, std::string& logOut) {
         state_.phase = TurnPhase::Defeat;
         logOut += " [FATAL DAMAGE: Player " + std::to_string(playerIdx + 1) + " (" + avName +
                   ") KIA — All Operatives Fallen. Predator Wins!]";
+    } else if (allRemainingEscaped && escapedCount > 0) {
+        state_.phase = TurnPhase::Victory;
+        logOut += " [OPERATIVE KIA: Player " + std::to_string(playerIdx + 1) + " (" + avName +
+                  ") has fallen — all surviving operatives (" + std::to_string(escapedCount) +
+                  ") are aboard The Choppa! MINOR VICTORY!]";
     } else {
         logOut += " [OPERATIVE KIA: Player " + std::to_string(playerIdx + 1) + " (" + avName +
                   ") has fallen! Remaining operatives fight on!]";
+    }
+
+    // Issue A7 — A Whole New Level Of Pain (def 187): "When you die, kill each other player."
+    if (hasWholeNewLevelOfPain && state_.phase != TurnPhase::Defeat) {
+        logOut += " [A Whole New Level Of Pain: P" + std::to_string(playerIdx + 1) +
+                  "'s death triggers every other player's death!]";
+        for (int otherIdx = 0; otherIdx < state_.playerCount; ++otherIdx) {
+            if (otherIdx != playerIdx &&
+                otherIdx < static_cast<int>(state_.players.size()) &&
+                state_.players[static_cast<size_t>(otherIdx)].alive &&
+                !state_.players[static_cast<size_t>(otherIdx)].escapedInChoppa) {
+                eliminatePlayer(otherIdx, logOut);
+            }
+        }
     }
 }
 
 void Table::drawStrikeAgainstPlayer(int playerIdx, std::uint32_t seed, std::string& logOut) {
     if (state_.phase == TurnPhase::Defeat || state_.phase == TurnPhase::Victory) return;
     if (playerIdx < 0 || playerIdx >= static_cast<int>(state_.players.size())) return;
-    if (!state_.players[static_cast<size_t>(playerIdx)].alive) return;
+    if (!state_.players[static_cast<size_t>(playerIdx)].alive ||
+        state_.players[static_cast<size_t>(playerIdx)].escapedInChoppa) {
+        return;
+    }
 
     if (playerIdx == state_.activePlayer && state_.avoidStrikesAvailable > 0) {
+        std::string autoPlayLog;
+        autoPlayHandCardMatchingDef(4, autoPlayLog);  // Real Nasty Habit
+        autoPlayHandCardMatchingDef(65, autoPlayLog); // In the Shadows
         state_.avoidStrikesAvailable -= 1;
-        logOut += " [Avoided Strike!]";
+        logOut += " [Avoided Strike (-1 Strike Draw)!]" + autoPlayLog;
         return;
     }
 
@@ -2768,6 +4595,7 @@ void Table::drawStrikeAgainstPlayer(int playerIdx, std::uint32_t seed, std::stri
 
     if (!strikes || strikes->cards.empty()) return;
 
+    const Vec2 strikeDeckPos = strikes->pos;
     CardInst s = strikes->cards.back();
     strikes->cards.pop_back();
     s.faceUp = true;
@@ -2780,6 +4608,7 @@ void Table::drawStrikeAgainstPlayer(int playerIdx, std::uint32_t seed, std::stri
         // Close Call (0 Damage) -> goes to Discarded Strikes
         Pile& discStrikes = ensureZonePile("discard_strikes", {1846.f, 547.f}, "");
         discStrikes.cards.push_back(s);
+        queueCardFlight(s, strikeDeckPos, discStrikes.pos, false, true);
         logOut += " [Strike: Close Call (0 dmg)!]";
 
         // One at a Time (def 110) in Combat Zone forces another Strike on Close Call
@@ -2793,33 +4622,68 @@ void Table::drawStrikeAgainstPlayer(int playerIdx, std::uint32_t seed, std::stri
         return;
     }
 
+    // Issue A4 — Cover Me! (def 191, 4 Damage):
+    // "The other players may discard cards with a printed total of at least 4 [Attack] to cancel this Strike."
+    // Opens one-time interactive Cover Me! modal so teammates can choose which Attack cards (>= 4 ///) to discard or decline!
+    if (s.def == 191 && state_.playerCount > 1) {
+        int totalOtherAtk = 0;
+        for (int otherP = 0; otherP < state_.playerCount; ++otherP) {
+            if (otherP == playerIdx || otherP >= static_cast<int>(state_.players.size()) ||
+                !state_.players[static_cast<size_t>(otherP)].alive ||
+                state_.players[static_cast<size_t>(otherP)].escapedInChoppa) {
+                continue;
+            }
+            const std::string otherHandZid = playerZone(otherP, "hand");
+            for (const auto& hp : state_.piles) {
+                if (hp.zone != otherHandZid) continue;
+                for (const auto& c : hp.cards) {
+                    const int cAtk = catalog_.card(c.def).attack;
+                    if (cAtk > 0) totalOtherAtk += cAtk;
+                }
+            }
+        }
+
+        if (totalOtherAtk >= 4) {
+            state_.pendingCoverMeChoice = true;
+            state_.pendingCoverMeTargetPlayer = playerIdx;
+            state_.pendingCoverMeCard = s;
+            state_.coverMeSelectedUids.clear();
+            logOut += " [STRIKE — COVER ME! (4 DMG): Teammates may choose Attack cards totaling >= 4 /// to discard and cancel this Strike!]";
+            return;
+        }
+    }
+
+    // Issue A5 — Sacrifice (def 192, 5 Damage): "Another player may take this Strike instead of you."
+    // In multiplayer with at least one other living player, prompt the player to choose who receives Sacrifice!
+    if (s.def == 192 && state_.playerCount > 1) {
+        bool anyOtherAlive = false;
+        for (int otherP = 0; otherP < state_.playerCount; ++otherP) {
+            if (otherP != playerIdx && otherP < static_cast<int>(state_.players.size()) &&
+                state_.players[static_cast<size_t>(otherP)].alive &&
+                !state_.players[static_cast<size_t>(otherP)].escapedInChoppa) {
+                anyOtherAlive = true;
+                break;
+            }
+        }
+        if (anyOtherAlive) {
+            state_.pendingSacrificeChoice = true;
+            state_.pendingSacrificeSourcePlayer = playerIdx;
+            state_.pendingSacrificeCard = s;
+            logOut += " [STRIKE — SACRIFICE (5 DMG): Choose which player takes this Strike!]";
+            return;
+        }
+    }
+
     const std::string strikeZid = playerZone(playerIdx, "strikes");
     Pile& wounds = ensureZonePile(strikeZid, {335.f, layout_.boardSize.y + 185.f}, "");
     wounds.cards.push_back(s);
+    queueCardFlight(s, strikeDeckPos, wounds.pos, false, true);
     syncStateFromZones();
 
     const PlayerState& ps = state_.players[static_cast<size_t>(playerIdx)];
     logOut += " [P" + std::to_string(playerIdx + 1) + " Strike: " + d.name + " (" +
               std::to_string(dmg) + " dmg -> " + std::to_string(ps.strikeDamage) + "/" +
               std::to_string(ps.health) + " HP)!]";
-
-    // Stunning Blow (def 186): Discard a card from your hand
-    if (s.def == 186) {
-        const std::string handZid = playerZone(playerIdx, "hand");
-        const std::string discZid = playerZone(playerIdx, "discard");
-        for (auto& hp : state_.piles) {
-            if (hp.zone == handZid && !hp.cards.empty()) {
-                CardInst disc = hp.cards.back();
-                hp.cards.pop_back();
-                Pile& pDisc = ensureZonePile(discZid, {2207.f, 1367.f}, "");
-                pDisc.cards.push_back(disc);
-                reflowZone(handZid);
-                logOut += " [Stunning Blow: P" + std::to_string(playerIdx + 1) +
-                          " discarded 1 card from hand!]";
-                break;
-            }
-        }
-    }
 
     if (ps.strikeDamage >= ps.health) {
         if (ps.cannotDieTurnsRemaining > 0) {
@@ -2829,14 +4693,96 @@ void Table::drawStrikeAgainstPlayer(int playerIdx, std::uint32_t seed, std::stri
             syncStateFromZones();
         }
     }
+
+    // Issue A8 — Stunning Blow (def 186, 1 Damage): "Draw another Strike for each Mark you have."
+    if (s.def == 186 && state_.phase != TurnPhase::Defeat &&
+        state_.players[static_cast<size_t>(playerIdx)].alive) {
+        const int marks = state_.players[static_cast<size_t>(playerIdx)].marksCount;
+        if (marks > 0) {
+            logOut += " [Stunning Blow: P" + std::to_string(playerIdx + 1) + " has " +
+                      std::to_string(marks) + " Mark(s) -> draws " + std::to_string(marks) +
+                      " extra Strike(s)!]";
+            for (int m = 0; m < marks; ++m) {
+                if (state_.phase == TurnPhase::Defeat ||
+                    !state_.players[static_cast<size_t>(playerIdx)].alive) {
+                    break;
+                }
+                drawStrikeAgainstPlayer(playerIdx,
+                                        seed + static_cast<std::uint32_t>((m + 1) * 19), logOut);
+            }
+        }
+    }
+}
+
+std::string Table::resolveSacrificeChoice(int chosenPlayerIdx) {
+    if (!state_.pendingSacrificeChoice) {
+        return "No pending Sacrifice choice.";
+    }
+    if (chosenPlayerIdx < 0 || chosenPlayerIdx >= static_cast<int>(state_.players.size()) ||
+        !state_.players[static_cast<size_t>(chosenPlayerIdx)].alive ||
+        state_.players[static_cast<size_t>(chosenPlayerIdx)].escapedInChoppa) {
+        return "Choose a living player to receive Sacrifice.";
+    }
+
+    const int srcP = state_.pendingSacrificeSourcePlayer;
+    CardInst s = state_.pendingSacrificeCard;
+    s.faceUp = true;
+    s.attached = false;
+    state_.pendingSacrificeChoice = false;
+
+    const CardDef& d = catalog_.card(s.def);
+    const int dmg = std::max(0, d.attack);
+
+    const std::string strikeZid = playerZone(chosenPlayerIdx, "strikes");
+    Pile& wounds = ensureZonePile(strikeZid, {335.f, layout_.boardSize.y + 185.f}, "");
+    wounds.cards.push_back(s);
+    queueCardFlight(s, zoneCenterPos("strikes", {1620.f, 550.f}), wounds.pos, true, true);
+    syncStateFromZones();
+
+    const PlayerState& ps = state_.players[static_cast<size_t>(chosenPlayerIdx)];
+    std::string log;
+    if (chosenPlayerIdx == srcP) {
+        log = "P" + std::to_string(chosenPlayerIdx + 1) + " kept SACRIFICE (" +
+              std::to_string(dmg) + " dmg -> " + std::to_string(ps.strikeDamage) + "/" +
+              std::to_string(ps.health) + " HP)!";
+    } else {
+        log = "P" + std::to_string(srcP + 1) + " chose P" +
+              std::to_string(chosenPlayerIdx + 1) + " to take SACRIFICE (" +
+              std::to_string(dmg) + " dmg -> " + std::to_string(ps.strikeDamage) + "/" +
+              std::to_string(ps.health) + " HP)!";
+    }
+
+    if (ps.strikeDamage >= ps.health) {
+        if (ps.cannotDieTurnsRemaining > 0) {
+            log += " [Dutch Rare Immunity: Survived fatal damage!]";
+        } else {
+            eliminatePlayer(chosenPlayerIdx, log);
+            syncStateFromZones();
+        }
+    }
+
+    state_.lastActionLog = log;
+    recordMove("SACRIFICE_CHOICE", d.name, 1, "strikes", strikeZid, ps.strikeDamage, true, log);
+    return log;
 }
 
 std::string Table::resolveStrikePhase(std::uint32_t seed) {
     if (state_.phase == TurnPhase::Victory || state_.phase == TurnPhase::Defeat) {
         return state_.lastActionLog;
     }
+    if (hasPendingModal()) {
+        return "Resolve the active prompt before advancing to the Strike Phase.";
+    }
 
     const int ap = state_.activePlayer;
+    if (ap < static_cast<int>(state_.players.size()) &&
+        state_.players[static_cast<size_t>(ap)].escapedInChoppa) {
+        state_.phase = TurnPhase::CleanupPhase;
+        state_.lastActionLog = "P" + std::to_string(ap + 1) +
+                               " evacuated aboard The Choppa! — skipping Strike Phase.";
+        return state_.lastActionLog;
+    }
+
     std::string log = "P" + std::to_string(ap + 1) + " Strike Phase: ";
 
     syncStateFromZones();
@@ -2900,12 +4846,14 @@ std::string Table::resolveStrikePhase(std::uint32_t seed) {
     for (int i = static_cast<int>(state_.piles.size()) - 1; i >= 0; --i) {
         Pile& p = state_.piles[static_cast<size_t>(i)];
         if (p.zone == "combat" && !p.cards.empty() && p.top().def == 213) {
+            const Vec2 fromPos = p.pos;
             CardInst c = p.cards.back();
             p.cards.pop_back();
             visuals_.erase(p.id);
             state_.piles.erase(state_.piles.begin() + i);
             Pile& deadPrey = ensureZonePile("dead_prey", {1950.f, 220.f}, "");
             deadPrey.cards.push_back(c);
+            queueCardFlight(c, fromPos, deadPrey.pos, true, true);
             log += " [Almost No Weight discarded at end of Strike Phase.]";
         }
     }
@@ -2923,26 +4871,60 @@ std::string Table::resolveCleanupPhase(std::uint32_t seed) {
     if (state_.phase == TurnPhase::Victory || state_.phase == TurnPhase::Defeat) {
         return state_.lastActionLog;
     }
+    if (state_.pendingSacrificeChoice) {
+        return "Choose which player takes the SACRIFICE Strike (5 Damage) first!";
+    }
+    if (state_.pendingCoverMeChoice) {
+        return "Resolve the COVER ME! Strike prompt first!";
+    }
+    if (hasPendingModal()) {
+        return "Resolve the active card ability prompt before Cleanup!";
+    }
 
     const int ap = state_.activePlayer;
     const bool apAlive =
         (ap < static_cast<int>(state_.players.size())) && state_.players[static_cast<size_t>(ap)].alive;
+    const bool apEscaped =
+        apAlive && state_.players[static_cast<size_t>(ap)].escapedInChoppa;
 
     int discardedCount = 0;
     const std::string apPlayedZid = playerZone(ap, "played");
     const std::string apHandZid = playerZone(ap, "hand");
     const std::string apDiscZid = playerZone(ap, "discard");
 
-    // 1. Discard active player's Played & Hand cards to active player's Discard
+    std::string log;
+
+    // 1. Discard active player's Played & Hand cards:
+    //    - Cards in state_.killedPlayedUids move to Dead Characters ("dead_characters")!
+    //    - Active Dutch Rare immunity card (ps.activeImmunityCardUid) stays stationed next to Avatar on turn 1 (cannotDieTurnsRemaining == 2 -> 1),
+    //      and only moves to Discard when cannotDieTurnsRemaining expires (1 -> 0) at end of next turn!
     if (apAlive) {
+        PlayerState& ps = state_.players[static_cast<size_t>(ap)];
+        const bool keepImmunityCardOnBoard =
+            (ps.activeImmunityCardUid != 0 && ps.cannotDieTurnsRemaining >= 2);
+
         std::vector<CardInst> apToDiscard;
+        std::vector<CardInst> apToDeadChars;
+        const Vec2 discTargetPos = zoneCenterPos(apDiscZid, {2207.f, 1367.f});
+        const Vec2 deadCharsPos = zoneCenterPos("dead_characters", {1846.f, 871.f});
+
         for (auto& p : state_.piles) {
             if ((p.zone == apPlayedZid || p.zone == apHandZid) && !p.cards.empty()) {
+                if (keepImmunityCardOnBoard && p.zone == apPlayedZid &&
+                    p.top().uid == ps.activeImmunityCardUid) {
+                    continue; // Remains stationed beside Avatar until end of next turn!
+                }
+                const Vec2 fromPos = p.pos;
                 for (auto c : p.cards) {
                     c.faceUp = true;
                     c.attached = false;
-                    apToDiscard.push_back(c);
-                    ++discardedCount;
+                    if (isCardKilledInPlayed(c.uid)) {
+                        apToDeadChars.push_back(c);
+                        queueCardFlight(c, fromPos, deadCharsPos, true, true);
+                    } else {
+                        apToDiscard.push_back(c);
+                        ++discardedCount;
+                    }
                 }
                 p.cards.clear();
             }
@@ -2950,6 +4932,13 @@ std::string Table::resolveCleanupPhase(std::uint32_t seed) {
         if (!apToDiscard.empty()) {
             Pile& apDisc = ensureZonePile(apDiscZid, {2207.f, 1367.f}, "");
             apDisc.cards.insert(apDisc.cards.end(), apToDiscard.begin(), apToDiscard.end());
+            queueCardFlight(apToDiscard.back(), zoneCenterPos(apPlayedZid, apDisc.pos),
+                            discTargetPos, true, true);
+        }
+        if (!apToDeadChars.empty()) {
+            Pile& deadChars = ensureZonePile("dead_characters", {1846.f, 871.f}, "");
+            deadChars.cards.insert(deadChars.cards.end(), apToDeadChars.begin(),
+                                   apToDeadChars.end());
         }
         reflowZone(apHandZid);
         reflowZone(apPlayedZid);
@@ -2959,13 +4948,19 @@ std::string Table::resolveCleanupPhase(std::uint32_t seed) {
     for (int q = 0; q < state_.playerCount; ++q) {
         if (q < static_cast<int>(state_.players.size())) {
             state_.players[static_cast<size_t>(q)].coordinatedThisTurn = false;
+            state_.players[static_cast<size_t>(q)].allHandCoordinateThisTurn = false;
         }
         if (q == ap) continue;
         const std::string qPlayedZid = playerZone(q, "played");
         const std::string qDiscZid = playerZone(q, "discard");
+        const std::uint32_t qImmUid =
+            (q < static_cast<int>(state_.players.size()))
+                ? state_.players[static_cast<size_t>(q)].activeImmunityCardUid
+                : 0;
         std::vector<CardInst> coordToDiscard;
         for (auto& p : state_.piles) {
             if (p.zone == qPlayedZid && !p.cards.empty()) {
+                if (qImmUid != 0 && p.top().uid == qImmUid) continue;
                 for (auto c : p.cards) {
                     c.faceUp = true;
                     c.attached = false;
@@ -2992,10 +4987,26 @@ std::string Table::resolveCleanupPhase(std::uint32_t seed) {
     state_.playedClasses.clear();
     state_.playedTeams.clear();
     state_.playedCharacters.clear();
+    state_.roundHandClasses.clear();
+    state_.roundHandTeams.clear();
+    state_.coordinatedClasses.clear();
+    state_.coordinatedTeams.clear();
+    state_.coordinatedCharacters.clear();
+    state_.coordinatedCards.clear();
     state_.accountedPlayedUids.clear();
+    state_.triggeredSuperpowerUids.clear();
+    state_.killedPlayedUids.clear();
+    state_.swappedStatUids.clear();
+    state_.lockedAccountedUids.clear();
+    state_.accountedCardRecruit.clear();
+    state_.accountedCardAttack.clear();
+    state_.accountedCardAvoid.clear();
+    state_.accountedCardFreeScan.clear();
+    state_.accountedCardCombatPenalty.clear();
+    state_.accountedCardDrawOnKill.clear();
+    state_.abilityUsesThisTurn.clear();
 
-    std::string log;
-    if (apAlive) {
+    if (apAlive && !apEscaped) {
         PlayerState& ps = state_.players[static_cast<size_t>(ap)];
         const int drawCount = std::max(1, 6 - ps.nextHandSizePenalty);
         ps.nextHandSizePenalty = 0;
@@ -3009,24 +5020,32 @@ std::string Table::resolveCleanupPhase(std::uint32_t seed) {
         if (ps.cannotDieTurnsRemaining > 0) {
             ps.cannotDieTurnsRemaining -= 1;
             state_.cannotDieTurnsRemaining = ps.cannotDieTurnsRemaining;
-            if (ps.cannotDieTurnsRemaining == 0 && ps.strikeDamage >= ps.health) {
-                eliminatePlayer(ap, log);
-                if (state_.phase == TurnPhase::Defeat) {
-                    state_.lastActionLog = log;
-                    return log;
+            if (ps.cannotDieTurnsRemaining == 0) {
+                ps.activeImmunityCardUid = 0;
+                log += " [If It Bleeds, We Can Kill It expired and moved to Discard.]";
+                if (ps.strikeDamage >= ps.health) {
+                    eliminatePlayer(ap, log);
+                    if (state_.phase == TurnPhase::Defeat || state_.phase == TurnPhase::Victory) {
+                        state_.lastActionLog = log;
+                        return log;
+                    }
                 }
             }
         }
+    } else if (apEscaped) {
+        log = "P" + std::to_string(ap + 1) +
+              " is safely aboard The Choppa! — passing turn to next operative.";
     } else {
         log = "P" + std::to_string(ap + 1) + " fallen — passing turn to next surviving operative.";
     }
 
-    // 3. Advance to next living player's Enemy Phase
+    // 3. Advance to next living, non-escaped player's Enemy Phase
     state_.turnNumber += 1;
     for (int step = 1; step <= state_.playerCount; ++step) {
         const int cand = (ap + step) % std::max(1, state_.playerCount);
         if (cand < static_cast<int>(state_.players.size()) &&
-            state_.players[static_cast<size_t>(cand)].alive) {
+            state_.players[static_cast<size_t>(cand)].alive &&
+            !state_.players[static_cast<size_t>(cand)].escapedInChoppa) {
             state_.activePlayer = cand;
             break;
         }
@@ -3084,6 +5103,16 @@ void Table::syncVisuals() {
 }
 
 void Table::updateVisuals(float dt, PileId held) {
+    flightBatchCounter_ = 0;
+    for (auto it = flyingCards_.begin(); it != flyingCards_.end();) {
+        it->elapsed += dt;
+        if (it->elapsed >= it->delay + it->duration) {
+            it = flyingCards_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
     for (const auto& p : state_.piles) {
         PileVisual& v = visual(p.id);
         const bool isHeld = (p.id == held);

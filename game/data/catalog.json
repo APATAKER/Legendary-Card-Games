@@ -766,12 +766,12 @@
                       "cost":  2,
                       "recruit":  2,
                       "attack":  0,
-                      "classType":  "Strength",
+                      "classType":  "Survival",
                       "team":  "Dutch\u0027s Team",
                       "keywords":  [
 
                                    ],
-                      "rulesText":  "[Strength]: Once this turn you may choose a player and heal their Strike with the least damage. (If there\u0027s a tie, you choose. An * counts as 0.)"
+                      "rulesText":  "[Survival]: Once this turn you may choose a player and heal their Strike with the least damage. (If there\u0027s a tie, you choose. An * counts as 0.)"
                   },
                   {
                       "id":  1,
@@ -826,7 +826,7 @@
                       "cost":  7,
                       "recruit":  0,
                       "attack":  2,
-                      "classType":  "Survival",
+                      "classType":  "Strength",
                       "team":  "Dutch\u0027s Team",
                       "keywords":  [
 
@@ -846,7 +846,7 @@
                       "cost":  3,
                       "recruit":  0,
                       "attack":  1,
-                      "classType":  "Strength",
+                      "classType":  "Survival",
                       "team":  "Dutch\u0027s Team",
                       "keywords":  [
                                        "Coordinate"
@@ -886,7 +886,7 @@
                       "cost":  5,
                       "recruit":  1,
                       "attack":  0,
-                      "classType":  "Survival",
+                      "classType":  "Strength",
                       "team":  "Dutch\u0027s Team",
                       "keywords":  [
                                        "Brothers in Arms"
@@ -946,7 +946,7 @@
                       "cost":  3,
                       "recruit":  0,
                       "attack":  2,
-                      "classType":  "Survival",
+                      "classType":  "Strength",
                       "team":  "Dutch\u0027s Team",
                       "keywords":  [
 
@@ -986,7 +986,7 @@
                       "cost":  8,
                       "recruit":  0,
                       "attack":  4,
-                      "classType":  "Strength",
+                      "classType":  "Survival",
                       "team":  "Dutch\u0027s Team",
                       "keywords":  [
                                        "Coordinate"
@@ -1026,12 +1026,12 @@
                       "cost":  4,
                       "recruit":  0,
                       "attack":  2,
-                      "classType":  "Survival",
+                      "classType":  "Strength",
                       "team":  "Dutch\u0027s Team",
                       "keywords":  [
 
                                    ],
-                      "rulesText":  "[Survival]: Once this turn you may switch an Enemy or hidden card with a different Enemy or hidden card."
+                      "rulesText":  "[Strength]: Once this turn you may switch an Enemy or hidden card with a different Enemy or hidden card."
                   },
                   {
                       "id":  14,
@@ -1046,7 +1046,7 @@
                       "cost":  5,
                       "recruit":  0,
                       "attack":  2,
-                      "classType":  "Strength",
+                      "classType":  "Survival",
                       "team":  "Dutch\u0027s Team",
                       "keywords":  [
                                        "Brothers in Arms"
@@ -1470,7 +1470,7 @@
                       "cost":  -1,
                       "recruit":  -1,
                       "attack":  12,
-                      "classType":  "Strength",
+                      "classType":  "Survival",
                       "team":  "",
                       "keywords":  [
 
@@ -1490,7 +1490,7 @@
                       "cost":  0,
                       "recruit":  0,
                       "attack":  2,
-                      "classType":  "Strength",
+                      "classType":  "Survival",
                       "team":  "",
                       "keywords":  [
                                        "Call for Backup"
@@ -1508,7 +1508,7 @@
                       "subtitle":  "AVATAR",
                       "cost":  -1,
                       "attack":  9,
-                      "classType":  "Leadership",
+                      "classType":  "Intel",
                       "rarity":  "Role",
                       "keywords":  [
 
@@ -1528,7 +1528,7 @@
                       "subtitle":  "DETECTIVE",
                       "cost":  0,
                       "attack":  2,
-                      "classType":  "Leadership",
+                      "classType":  "Intel",
                       "rarity":  "Role",
                       "keywords":  [
                                        "Call for Backup"
@@ -1590,7 +1590,7 @@
                       "cost":  -1,
                       "recruit":  -1,
                       "attack":  10,
-                      "classType":  "Survival",
+                      "classType":  "Strength",
                       "team":  "",
                       "keywords":  [
 
@@ -1610,7 +1610,7 @@
                       "cost":  0,
                       "recruit":  0,
                       "attack":  2,
-                      "classType":  "Survival",
+                      "classType":  "Strength",
                       "team":  "",
                       "keywords":  [
                                        "Call for Backup"
@@ -1788,7 +1788,7 @@
                       "subtitle":  "AVATAR",
                       "cost":  -1,
                       "attack":  11,
-                      "classType":  "Intel",
+                      "classType":  "Leadership",
                       "rarity":  "Role",
                       "keywords":  [
 
@@ -1808,7 +1808,7 @@
                       "subtitle":  "SWAT OFFICER",
                       "cost":  0,
                       "attack":  2,
-                      "classType":  "Intel",
+                      "classType":  "Leadership",
                       "rarity":  "Role",
                       "keywords":  [
                                        "Call for Backup"
@@ -1868,7 +1868,7 @@
                       "subtitle":  "PREDATOR AVATAR",
                       "cost":  -1,
                       "attack":  12,
-                      "classType":  "Leadership",
+                      "classType":  "Intel",
                       "rarity":  "Role",
                       "keywords":  [
 
@@ -1888,7 +1888,7 @@
                       "subtitle":  "CITY HUNTER",
                       "cost":  0,
                       "attack":  0,
-                      "classType":  "Leadership",
+                      "classType":  "Intel",
                       "rarity":  "Role",
                       "keywords":  [
                                        "Activate"
@@ -2419,15 +2419,15 @@
                       "title":  "THE CHOPPA!",
                       "subtitle":  "OBJECTIVE 3 - MINOR GOAL",
                       "rarity":  "Goal",
-                      "cost":  -1,
+                      "cost":  3,
                       "recruit":  -1,
-                      "attack":  3,
+                      "attack":  -1,
                       "classType":  "",
                       "team":  "",
                       "keywords":  [
 
                                    ],
-                      "rulesText":  "Reveal: Move to the Combat Zone.\nCombat Zone: Pay 3 [Attack] to evacuate to The Choppa (draw a Strike for each Enemy in the Combat Zone; if you survive, win a Minor Victory)."
+                      "rulesText":  "Reveal: Move to the Combat Zone.\nCombat Zone: On your turn, you may pay 3 [Recruit] and try to \u0027Get to the Choppa!\u0027 (Draw Strikes equal to the number of Enemies in the Combat Zone. If you survive, place your Avatar beneath The Choppa. You are safe and out of the game. When every living player is in The Choppa, complete the Objective.)"
                   },
                   {
                       "id":  115,
@@ -2439,15 +2439,15 @@
                       "title":  "THREE HUNDRED CITY BLOCKS",
                       "subtitle":  "SPECIAL",
                       "rarity":  "Goal",
-                      "cost":  -1,
+                      "cost":  4,
                       "recruit":  -1,
-                      "attack":  4,
+                      "attack":  -1,
                       "classType":  "",
                       "team":  "",
                       "keywords":  [
-
+                                       "Attach"
                                    ],
-                      "rulesText":  "Reveal: Attach to the Final Enemy. When the Final Enemy is killed, the active player must pay 4 [Attack] or die."
+                      "rulesText":  "Reveal: Attach this to the Final Enemy. If you can\u0027t, add an Enemy card to the Wilds, then shuffle this into the Enemy deck.\nOngoing: When the Final Enemy is killed, kill the active player unless he pays 4 [Recruit]."
                   },
                   {
                       "id":  116,
@@ -3148,7 +3148,7 @@
                       "keywords":  [
 
                                    ],
-                      "rulesText":  "1 Damage. Discard a card from your hand."
+                      "rulesText":  "1 Damage. Draw another Strike for each Mark you have."
                   },
                   {
                       "id":  187,
@@ -3162,13 +3162,13 @@
                       "rarity":  "Strike",
                       "cost":  -1,
                       "recruit":  -1,
-                      "attack":  4,
+                      "attack":  1,
                       "classType":  "",
                       "team":  "",
                       "keywords":  [
 
                                    ],
-                      "rulesText":  "4 Damage!"
+                      "rulesText":  "1 Damage. When you die, kill each other player."
                   },
                   {
                       "id":  188,
@@ -3228,7 +3228,7 @@
                       "keywords":  [
 
                                    ],
-                      "rulesText":  "3 Damage. This Strike cannot be healed."
+                      "rulesText":  "3 Damage. When this Strike is healed from you, draw a Strike."
                   },
                   {
                       "id":  191,
@@ -3237,18 +3237,18 @@
                       "src":  "08_enemy_strike_deck/Strike_CoverMe.jpg",
                       "land":  false,
                       "qty":  2,
-                      "title":  "COVER ME",
+                      "title":  "COVER ME!",
                       "subtitle":  "STRIKE",
                       "rarity":  "Strike",
                       "cost":  -1,
                       "recruit":  -1,
-                      "attack":  1,
+                      "attack":  4,
                       "classType":  "",
                       "team":  "",
                       "keywords":  [
 
                                    ],
-                      "rulesText":  "1 Damage."
+                      "rulesText":  "4 Damage. The other players may discard cards with a printed total of at least 4 [Attack] to cancel this Strike."
                   },
                   {
                       "id":  192,
@@ -3262,13 +3262,13 @@
                       "rarity":  "Strike",
                       "cost":  -1,
                       "recruit":  -1,
-                      "attack":  1,
+                      "attack":  5,
                       "classType":  "",
                       "team":  "",
                       "keywords":  [
 
                                    ],
-                      "rulesText":  "1 Damage."
+                      "rulesText":  "5 Damage. Another player may take this Strike instead of you."
                   },
                   {
                       "id":  193,
@@ -3282,13 +3282,13 @@
                       "rarity":  "Strike",
                       "cost":  -1,
                       "recruit":  -1,
-                      "attack":  2,
+                      "attack":  0,
                       "classType":  "",
                       "team":  "",
                       "keywords":  [
 
                                    ],
-                      "rulesText":  "2 Damage."
+                      "rulesText":  "0 Damage. At the start of your next turn, discard this and draw two Strikes."
                   },
                   {
                       "id":  194,
@@ -3302,13 +3302,13 @@
                       "rarity":  "Strike",
                       "cost":  -1,
                       "recruit":  -1,
-                      "attack":  2,
+                      "attack":  0,
                       "classType":  "",
                       "team":  "",
                       "keywords":  [
 
                                    ],
-                      "rulesText":  "2 Damage."
+                      "rulesText":  "0 Damage. Your Strikes other than Open Wounds can\u0027t be healed."
                   },
                   {
                       "id":  195,
@@ -3459,12 +3459,12 @@
                       "cost":  -1,
                       "recruit":  -1,
                       "attack":  2,
-                      "classType":  "Strength",
+                      "classType":  "Survival",
                       "team":  "",
                       "keywords":  [
 
                                    ],
-                      "rulesText":  "Death: Unless you played a [Strength] card this turn, draw a Strike."
+                      "rulesText":  "Death: Unless you played a [Survival] card this turn, draw a Strike."
                   },
                   {
                       "id":  210,
@@ -3499,12 +3499,12 @@
                       "cost":  -1,
                       "recruit":  -1,
                       "attack":  3,
-                      "classType":  "Survival",
+                      "classType":  "Strength",
                       "team":  "",
                       "keywords":  [
 
                                    ],
-                      "rulesText":  "Death: Unless you played a [Survival] card this turn, add an Enemy card to the Wilds."
+                      "rulesText":  "Death: Unless you played a [Strength] card this turn, add an Enemy card to the Wilds."
                   },
                   {
                       "id":  212,
@@ -3680,7 +3680,7 @@
                   },
                   {
                       "id":  226,
-                      "name":  "Commander (Strength)",
+                      "name":  "Commander (Survival)",
                       "group":  "g-commanders",
                       "src":  "12_starter_cards/CommanderCovert.jpg",
                       "land":  false,
@@ -3691,7 +3691,7 @@
                       "cost":  3,
                       "recruit":  2,
                       "attack":  0,
-                      "classType":  "Strength",
+                      "classType":  "Survival",
                       "team":  "",
                       "keywords":  [
                                        "Coordinate"
@@ -3740,7 +3740,7 @@
                   },
                   {
                       "id":  229,
-                      "name":  "Commander (Survival)",
+                      "name":  "Commander (Strength)",
                       "group":  "g-commanders",
                       "src":  "12_starter_cards/CommanderStrength.jpg",
                       "land":  false,
@@ -3751,7 +3751,7 @@
                       "cost":  3,
                       "recruit":  2,
                       "attack":  0,
-                      "classType":  "Survival",
+                      "classType":  "Strength",
                       "team":  "",
                       "keywords":  [
                                        "Coordinate"
@@ -3780,7 +3780,7 @@
                   },
                   {
                       "id":  231,
-                      "name":  "Killer Instinct (Strength)",
+                      "name":  "Killer Instinct (Survival)",
                       "group":  "g-killer-instincts",
                       "src":  "12_starter_cards/KillerInstinctCovert.jpg",
                       "land":  false,
@@ -3791,7 +3791,7 @@
                       "cost":  3,
                       "recruit":  2,
                       "attack":  0,
-                      "classType":  "Strength",
+                      "classType":  "Survival",
                       "team":  "",
                       "keywords":  [
 
@@ -3820,7 +3820,7 @@
                   },
                   {
                       "id":  233,
-                      "name":  "Killer Instinct (Survival)",
+                      "name":  "Killer Instinct (Strength)",
                       "group":  "g-killer-instincts",
                       "src":  "12_starter_cards/KillerInstinctStrength.jpg",
                       "land":  false,
@@ -3831,7 +3831,7 @@
                       "cost":  3,
                       "recruit":  2,
                       "attack":  0,
-                      "classType":  "Survival",
+                      "classType":  "Strength",
                       "team":  "",
                       "keywords":  [
 

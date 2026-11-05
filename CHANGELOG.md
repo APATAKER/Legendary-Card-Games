@@ -12,7 +12,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-05
+
 ### Added
+- **Auto-available hand stats & on-spend auto-playing**: Recruit (`*`) and Attack (`///`) from
+  cards in the active player's hand are immediately available in the Action Phase without
+  requiring "Play All" first. Spending Recruit or Attack automatically plays the needed cards
+  from hand, prioritising 0-cost Starters (`Experience`, `Brute Strength`) first.
+- **Optional card ability engine & interactive choice modals** (`Table.cpp`, `Overlay.cpp`):
+  - **Choose Card to Kill modal** (`Stick Around`, `Running the Streets`, `Nothing On Earth`,
+    `A Fitting Demise`): optional or mandatory card-kill picker. Cards killed by player
+    abilities remain in the Played Area with a crimson `KILLED (-> Dead)` badge and outline,
+    retaining their Recruit, Attack, Class and Team for the turn before moving to
+    `dead_characters` at Cleanup.
+  - **Heal Strike modal** (`Sexual Tyrannosaurus`, `I See You`, `Sources and Contacts`,
+    `Crafty Veteran`): interactive Strike picker across players, enforcing the `Open Wound`
+    heal-first restriction, the least-damage rule, and `Permanent Damage` replacement draws.
+  - **Sneak Peek modal** (`Pushing Pencils`): privately inspect any face-down Wilds card
+    without triggering its Reveal effect, then choose to keep it hidden or scan it face-up for
+    free.
+  - **Switch Two Wilds Cards modal** (`Same Kind of Jungle`): swap any two cards in The Wilds
+    (`wilds_0`..`wilds_4`, excluding Combat Zone and attached Goals).
+  - **Player Picker & Discard modal** (`Ol' Painless Is Waiting`, `I Can Get Even`): choose a
+    living player to draw 2 and discard 2 chosen hand cards, or grant `Coordinate` to all
+    cards in a chosen player's hand this turn.
+  - **Role card `Call for Backup` modals**: `The Highest Tech` (swap printed Recruit `*` and
+    Attack `///` on a card for the turn, with a `SWAPPED` badge), `Position and Situation`
+    (place a card from Discard on top of the Deck), and `Partners in Crime` (gain a Commander
+    or an HQ card costing 3 `*` or less).
+  - **Interactive Strike modals**: `Sacrifice` (5 Damage — keep on target or redirect to any
+    living teammate with fatal-damage warnings) and `Cover Me!` (4 Damage — teammates select
+    Attack cards from hand totalling 4+ `///` to discard and cancel the Strike).
+  - **`Like A Hunter` reveal modal**: shows each player's top-3 deck reveal results (Cost 1+
+    discarded vs. Cost 0 Starters kept on top of the deck).
+- **Tactical HUD & on-board badges**:
+  - **Expected Strikes This Turn** indicator showing raw strikes, Avoid Strike reduction and
+    net strikes, plus a **Free Scans Ready** counter.
+  - **Optional Card Abilities Ready** panel in the HUD, plus `ABILITY READY`,
+    `KILLED (-> Dead)` and `SWAPPED` on-card world badges and context-menu / 3D-inspect
+    activation buttons.
+- **Pile-to-pile flying card animations** (`FlyingCardAnim`): cubic ease-out arc, lift shadow,
+  stagger delay and mid-flight 3D flip squash whenever cards move between decks, hands, Wilds,
+  Combat Zone and discard piles.
+- **Multi-turn & Objective 3 mechanics**:
+  - `If It Bleeds, We Can Kill It` (Dutch Rare): stationed beside the player's Avatar across
+    2 turns (`cannotDieTurnsRemaining = 2`), preventing death until discarded at the end of
+    the next turn.
+  - `The Choppa!` (id 114): boarded in the Combat Zone by spending 3 `*` Recruit
+    (`Choppa: 3 *`), attaching the player's Avatar beneath `The Choppa!` (`escapedInChoppa`)
+    for Minor Victory.
+  - `Three Hundred City Blocks` (id 115): attaches beneath the Final Enemy (`One Ugly Mother`,
+    id 121) and requires spending 4 `*` Recruit when defeating it.
+  - `No Time to Bleed` (id 118): fought using Recruit (`*`) when outside the River.
+- **Expanded `--verify-mechanics` suite** (`Verify.cpp`): added Part 3 (Issues A1–A9
+  playthrough discrepancy fixes) and Part 4 (B-level & card-by-card review mechanics).
 - `README.md` with an overview, setup and build steps, controls, the print pipeline and a
   data file reference.
 - `CHANGELOG.md` (this file).
@@ -21,6 +74,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   extracted rules text).
 
 ### Changed
+- **`[Class]` and `[Team]` trigger threshold (Issue A1)**: tracks per-round classes and teams
+  (`roundHandClasses`, `roundHandTeams`) across hand, played area and coordinated cards;
+  `[Class]` and `[Team]` abilities require at least 2 matching cards in the turn and trigger
+  once per qualifying card.
+- **`Brothers in Arms` scaling**: scales dynamically (0–3 triggers) with the number of *other*
+  distinct Barracks characters (`Blain`, `Dillon`, `Dutch`, `Mac`) present across active turn
+  cards.
 - Moved the root-level scratch scripts into `tools/rules/`:
   - `scratch_extract.py` → `tools/rules/extract_rules_text.py`
   - `inspect_rules.py` → `tools/rules/inspect_rules.py`
@@ -30,6 +90,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replaced the Vite template README in `archive/app-react/` with notes about the prototype.
 
 ### Fixed
+- **Special Strike card rules (Issues A2–A8)**:
+  - `Open Wound` (id 194): deals 0 Damage and prevents other Strikes on that player from being
+    healed until `Open Wound` is healed first.
+  - `Permanent Damage` (id 190): deals 3 Damage, heals to `discard_strikes`, and draws a
+    replacement Strike when healed.
+  - `Cover Me!` (id 191): deals 4 Damage and can be cancelled by teammates discarding 4+
+    Attack from hand (without refilling their hands).
+  - `Sacrifice` (id 192): deals 5 Damage, prompts to choose any living player, and eliminates
+    the chosen player if their HP drops to 0 or below.
+  - `Festering Wound` (id 193): deals 0 initial Damage, then discards at the start of the
+    next Enemy Phase to draw 2 new Strikes.
+  - `A Whole New Level Of Pain` (id 187): deals 1 Damage and eliminates all other
+    non-immune players if its holder dies.
+  - `Stunning Blow` (id 186): deals 1 Damage and draws 1 extra Strike for each Mark on the
+    receiving player.
+- **Catalog class icon & metadata audit (`game/data/catalog.json`, Issue A9)**: corrected
+  `Strength` (Green Fist), `Survival` (Red), `Intel` (Yellow) and `Leadership` (Blue) class
+  mappings and rules text across Barracks heroes (`Blain`, `Dillon`, `Dutch`, `Mac`),
+  Avatars/Roles (`CIA Agent`, `Detective`, `Guerrilla`, `SWAT Officer`, `City Hunter`),
+  Young Blood (`209`, `211`), Commanders (`226`, `229`), Killer Instincts (`231`, `233`) and
+  Strikes (`Open Wound`).
 - `archive/app-react/scripts/build-catalog.mjs` now finds `predator/` again. The path
   broke when the app was moved into `archive/`.
 

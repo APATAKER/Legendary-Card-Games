@@ -345,7 +345,47 @@ void App::renderWorld() {
         renderer_.outline(hi.center(), hi.size(), 0.f, 12.f, 4.f, glow, 3.f);
     }
 
-    // 6. Held / dragged pile(s) rendered on top with lift & deep shadow
+    // 6. Pile-to-pile flying card animations rendered above resting piles
+    for (const auto& anim : table_->flyingCards()) {
+        if (anim.elapsed < anim.delay) continue; // Waiting for stagger delay
+        const float rawT =
+            std::clamp((anim.elapsed - anim.delay) / std::max(0.05f, anim.duration), 0.f, 1.f);
+        const float inv = 1.f - rawT;
+        const float easeT = 1.f - inv * inv * inv; // Cubic ease-out
+        const float arc = std::sin(rawT * kPi);
+
+        const Vec2 baseSize = table_->cardSize(anim.card.def);
+        const float liftScale = 1.f + 0.085f * arc;
+        const Vec2 size = baseSize * liftScale;
+        const float radius = 10.f * liftScale;
+        const Vec2 pos =
+            anim.startPos + (anim.endPos - anim.startPos) * easeT + Vec2{0.f, -28.f * arc};
+
+        bool showFaceUp = anim.endFaceUp;
+        float scaleX = 1.f;
+        if (anim.startFaceUp != anim.endFaceUp) {
+            showFaceUp = (rawT < 0.5f) ? anim.startFaceUp : anim.endFaceUp;
+            scaleX = std::max(0.05f, std::abs(std::cos(rawT * kPi)));
+        }
+
+        GLuint texId = backTex_.id;
+        Color tint{1.f, 1.f, 1.f, 1.f};
+        if (showFaceUp) {
+            Texture front = textures_->request(catalog_.card(anim.card.def).texture);
+            if (front) {
+                texId = front.id;
+            } else {
+                tint = {0.35f, 0.45f, 0.40f, 1.f};
+            }
+        }
+
+        renderer_.shadow(pos + Vec2{8.f * arc, 6.f + 22.f * arc}, size, 0.f, radius,
+                         10.f + 16.f * arc, {0.f, 0.f, 0.f, 0.62f});
+        renderer_.draw({pos, size, 0.f, scaleX, texId, tint, radius});
+        renderer_.outline(pos, size, 0.f, radius, 2.6f, Color::rgb(0x38bdf8, 0.92f));
+    }
+
+    // 7. Held / dragged pile(s) rendered on top with lift & deep shadow
     if (!draggedMultiPiles_.empty()) {
         for (PileId pid : draggedMultiPiles_) {
             if (const Pile* held = table_->find(pid)) {
@@ -362,17 +402,25 @@ void App::renderWorld() {
 void App::renderPile(const Pile& p, bool isHeld) {
     if (p.cards.empty()) return;
 
+    // If the top card of this pile is currently in flight, hide a 1-card pile until it lands,
+    // or show the underlying card on a multi-card stack while the top card flies in!
+    size_t visibleTopIdx = p.cards.size() - 1;
+    if (!isHeld && table_->isCardInFlight(p.top().uid)) {
+        if (p.cards.size() == 1) return;
+        visibleTopIdx = p.cards.size() - 2;
+    }
+
     const PileVisual& pv = table_->visual(p.id);
-    const CardInst& top = p.top();
+    const CardInst& top = p.cards[visibleTopIdx];
     const Vec2 baseSize = table_->cardSize(top.def);
     const float liftScale = 1.f + pv.lift * 0.065f;
     const Vec2 size = baseSize * liftScale;
     const float radius = 10.f * liftScale;
 
-    // Rulebook p.16: When a location has an attached card (e.g. Guerrilla Camp / Defensive Position)
+    // Rulebook p.16: When a location has an attached card (e.g. Guerrilla Camp / Defensive Position / Avatar under Choppa)
     // at the bottom and another card on top of it, render the attached bottom card slid upward
     // underneath the top card so players can clearly see the 2-card location stack!
-    const bool hasBottomAttached = (!isHeld && p.cards.size() >= 2 && p.cards.front().attached);
+    const bool hasBottomAttached = (!isHeld && visibleTopIdx >= 1 && p.cards.front().attached);
     if (hasBottomAttached) {
         const CardInst& bottom = p.cards.front();
         const Vec2 attSize = table_->cardSize(bottom.def);
@@ -401,7 +449,7 @@ void App::renderPile(const Pile& p, bool isHeld) {
 
     // Multi-card deck thickness layers beneath the top card (skip for 2-card attached Wilds stack)
     if (!hasBottomAttached) {
-        const int layers = std::min(4, (static_cast<int>(p.cards.size()) - 1 + 2) / 3);
+        const int layers = std::min(4, (static_cast<int>(visibleTopIdx) + 2) / 3);
         for (int i = layers; i >= 1; --i) {
             const Vec2 layerOff{-static_cast<float>(i) * 1.8f, static_cast<float>(i) * 2.2f};
             renderer_.draw({pv.pos + layerOff, size, pv.angle, 1.f, backTex_.id,
@@ -413,8 +461,9 @@ void App::renderPile(const Pile& p, bool isHeld) {
     const float flipCos = std::cos((1.f - pv.flipT) * kPi);
     const float scaleX = std::max(0.04f, std::abs(flipCos));
 
+    const bool isKilledInPlay = table_->isCardKilledInPlayed(top.uid);
     GLuint texId = backTex_.id;
-    Color tint{1, 1, 1, 1};
+    Color tint = isKilledInPlay ? Color{1.f, 0.68f, 0.68f, 1.f} : Color{1.f, 1.f, 1.f, 1.f};
     if (top.faceUp) {
         Texture front = textures_->request(catalog_.card(top.def).texture);
         if (front) {
@@ -427,9 +476,11 @@ void App::renderPile(const Pile& p, bool isHeld) {
     const Vec2 topPos = pv.pos + pv.topOffset;
     renderer_.draw({topPos, size, pv.angle, scaleX, texId, tint, radius});
 
-    // Subtle dark border on every card; amber outline on attached cards; bright highlight when selected/hovered/held
+    // Subtle dark border on every card; crimson outline if KILLED in Played Area; bright highlight when selected/hovered/held
     if (isHeld) {
         renderer_.outline(topPos, size, pv.angle, radius, 3.0f, Color::rgb(0xfef08a, 0.95f));
+    } else if (isKilledInPlay) {
+        renderer_.outline(topPos, size, pv.angle, radius, 3.4f, Color::rgb(0xef4444, 0.98f));
     } else if (isSelected(p.id)) {
         renderer_.outline(topPos, size, pv.angle, radius, 3.4f, Color::rgb(0x38bdf8, 0.98f));
     } else if (p.id == hoveredPile_) {
