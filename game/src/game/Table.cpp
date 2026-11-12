@@ -391,6 +391,47 @@ bool Table::canCompleteObjective2() const {
     return state_.recruitPool >= 6;
 }
 
+bool Table::hasAssaultTheStrongholdInOperations() const {
+    for (const auto& p : state_.piles) {
+        if (p.zone != "testing") continue;
+        for (const auto& c : p.cards) {
+            if (c.def == 124) return true;
+        }
+    }
+    return false;
+}
+
+int Table::countEventsInOperations() const {
+    int count = 0;
+    for (const auto& p : state_.piles) {
+        if (p.zone != "testing") continue;
+        for (const auto& c : p.cards) {
+            if (isEventDef(c.def)) ++count;
+        }
+    }
+    return count;
+}
+
+bool Table::canLeadTheAssault(std::string* reasonOut) const {
+    if (state_.phase != TurnPhase::ActionPhase) {
+        if (reasonOut) *reasonOut = "'Lead the Assault' can only be attempted during the Action Phase.";
+        return false;
+    }
+    if (hasPendingModal()) {
+        if (reasonOut) *reasonOut = "Resolve the active prompt first.";
+        return false;
+    }
+    if (!hasAssaultTheStrongholdInOperations()) {
+        if (reasonOut) *reasonOut = "Assault The Stronghold is not currently in Operations.";
+        return false;
+    }
+    if (state_.leadTheAssaultUsedThisTurn) {
+        if (reasonOut) *reasonOut = "You have already attempted 'Lead the Assault' once this turn.";
+        return false;
+    }
+    return true;
+}
+
 Vec2 Table::zoneCenterPos(const std::string& zoneId, Vec2 fallback) const {
     if (const Pile* zp = findZonePile(zoneId)) return zp->pos;
     if (const Zone* z = layout_.zone(zoneId)) return z->rect.center();
@@ -1204,6 +1245,20 @@ std::string Table::buildBoardSnapshot() const {
         }
     }
     if (!anyCombat) oss << "[Clear]";
+    oss << "\n";
+
+    oss << "Operations (testing): ";
+    bool anyOps = false;
+    for (const auto& p : state_.piles) {
+        if (p.zone == "testing" && !p.cards.empty()) {
+            for (const auto& c : p.cards) {
+                if (anyOps) oss << " | ";
+                oss << formatCardInst(c);
+                anyOps = true;
+            }
+        }
+    }
+    if (!anyOps) oss << "[Clear]";
     oss << "\n";
 
     // 5. Shared Decks & Discards
@@ -2035,6 +2090,20 @@ void Table::moveCardToCombatZone(CardInst card, std::uint32_t seed, std::string&
     // If an Event or Hazard is pushed into the Combat Zone, it resolves its effect immediately
     if (isEventDef(card.def)) {
         card.attached = false;
+        card.faceUp = true;
+        if (state_.setupConfig.movie == 2 && state_.currentObjective == 1) {
+            // Predator 2 Objective 1 Event ("Where the Hell is Special Weapons?!?"):
+            // "Move the Event card to Operations. If you would complete the Objective, discard an Event in Operations instead."
+            Pile& ops = ensureZonePile("testing", {1300.f, 548.f}, "Operations");
+            if (!ops.cards.empty() && ops.top().def == 124) {
+                ops.cards.insert(ops.cards.begin(), card);
+            } else {
+                ops.cards.push_back(card);
+            }
+            queueCardFlight(card, hillsPos, ops.pos, wasFaceUp, true);
+            logOut += " [Event revealed in Combat Zone -> Where the Hell is Special Weapons?!? Moved Event to Operations!]";
+            return;
+        }
         Pile& disc = ensureZonePile("discard_hazards", {2150.f, 545.f}, "Discarded Hazards/Events");
         disc.cards.push_back(card);
         queueCardFlight(card, hillsPos, disc.pos, wasFaceUp, true);
@@ -2076,6 +2145,16 @@ void Table::moveCardToCombatZone(CardInst card, std::uint32_t seed, std::string&
         ops.cards.push_back(card);
         queueCardFlight(card, hillsPos, ops.pos, wasFaceUp, true);
         logOut += " [Defensive Position moved to Operations!]";
+        return;
+    }
+    if (card.def == 124) {
+        // Predator 2 Objective 1 Goal: Assault The Stronghold moves to Operations
+        card.attached = false;
+        card.faceUp = true;
+        Pile& ops = ensureZonePile("testing", {1300.f, 548.f}, "Operations");
+        ops.cards.push_back(card);
+        queueCardFlight(card, hillsPos, ops.pos, wasFaceUp, true);
+        logOut += " [Assault The Stronghold revealed -> moved to Operations!]";
         return;
     }
     if (card.def == 115) {
@@ -2272,9 +2351,34 @@ void Table::resolveLocationHazard(CardInst hazardCard, std::uint32_t seed, std::
     logOut += " [HAZARD! Player " + std::to_string(state_.activePlayer + 1) + " Marked (" +
               std::to_string(state_.marksCount) + " total)!]";
 
+    const int markTotal = state_.marksCount;
+    if (state_.setupConfig.movie == 2) {
+        // The Streets of Los Angeles Hazard 1-3: "For each Mark you have, add an Enemy card to the Wilds."
+        for (int m = 0; m < markTotal; ++m) {
+            Pile* prey = findZonePile("prey");
+            if (!prey || prey->cards.empty()) break;
+            const Vec2 preyPos = prey->pos;
+            CardInst drawn = prey->cards.back();
+            prey->cards.pop_back();
+            drawn.faceUp = false;
+            drawn.attached = false;
+            if (prey->cards.empty()) {
+                const int pIdx = indexOf(prey->id);
+                if (pIdx >= 0) {
+                    visuals_.erase(prey->id);
+                    state_.piles.erase(state_.piles.begin() + pIdx);
+                }
+            }
+            logOut += " [Streets of LA Hazard: Added Enemy card face-down to Underground!]";
+            queueCardFlight(drawn, preyPos, zoneCenterPos("wilds_4", {1400.f, 234.f}), false,
+                            false);
+            pushCardIntoWildsSlot(4, drawn, seed + static_cast<std::uint32_t>(m * 13 + 7), logOut);
+        }
+        return;
+    }
+
     // Val Verdean Jungle Hazard 1-3: For each Mark you have, push leftmost unattached Wilds card to Combat Zone
-    const int pushCount = state_.marksCount;
-    for (int m = 0; m < pushCount; ++m) {
+    for (int m = 0; m < markTotal; ++m) {
         bool pushedAny = false;
         for (int s = 0; s <= 4; ++s) {
             const std::string zid = "wilds_" + std::to_string(s);
@@ -2325,6 +2429,20 @@ void Table::onCardRevealedInWilds(PileId wildsPileId, int slotIdx, std::uint32_t
         popWildsTopCard();
         CardInst ev = revealed;
         ev.attached = false;
+        ev.faceUp = true;
+        if (state_.setupConfig.movie == 2 && state_.currentObjective == 1) {
+            // Predator 2 Objective 1 Event ("Where the Hell is Special Weapons?!?"):
+            // "Move the Event card to Operations. If you would complete the Objective, discard an Event in Operations instead."
+            Pile& ops = ensureZonePile("testing", {1300.f, 548.f}, "Operations");
+            if (!ops.cards.empty() && ops.top().def == 124) {
+                ops.cards.insert(ops.cards.begin(), ev);
+            } else {
+                ops.cards.push_back(ev);
+            }
+            queueCardFlight(ev, wildsPos, ops.pos, true, true);
+            logOut += " Revealed EVENT (Where the Hell is Special Weapons?!?) -> moved to Operations!";
+            return;
+        }
         Pile& disc = ensureZonePile("discard_hazards", {2150.f, 545.f}, "Discarded Hazards/Events");
         disc.cards.push_back(ev);
         queueCardFlight(ev, wildsPos, disc.pos, true, true);
@@ -2355,6 +2473,19 @@ void Table::onCardRevealedInWilds(PileId wildsPileId, int slotIdx, std::uint32_t
         ops.cards.push_back(dp);
         queueCardFlight(dp, wildsPos, ops.pos, true, true);
         logOut += " Revealed Defensive Position -> moved to Operations!";
+        return;
+    }
+
+    // Predator 2 Objective 1 Goal: Assault The Stronghold (def 124) -> Move to Operations ("testing")
+    if (revealed.def == 124) {
+        popWildsTopCard();
+        CardInst ats = revealed;
+        ats.faceUp = true;
+        ats.attached = false;
+        Pile& ops = ensureZonePile("testing", {1300.f, 548.f}, "Operations");
+        ops.cards.push_back(ats);
+        queueCardFlight(ats, wildsPos, ops.pos, true, true);
+        logOut += " Revealed Assault The Stronghold -> moved to Operations!";
         return;
     }
 
@@ -3604,7 +3735,8 @@ bool Table::hasPendingModal() const {
            state_.pendingWildsSwapChoice || state_.pendingStatSwapChoice ||
            state_.pendingDiscardToDeckChoice || state_.pendingGainCardChoice ||
            state_.pendingLikeAHunterModal || state_.pendingDiscardKillChoice ||
-           state_.pendingDoorSwingsChoice || state_.pendingMoveMarkChoice;
+           state_.pendingDoorSwingsChoice || state_.pendingMoveMarkChoice ||
+           state_.pendingLeadTheAssaultModal || state_.pendingScorpionEnforcerChoice;
 }
 
 std::string Table::cancelOptionalModal() {
@@ -3636,6 +3768,8 @@ std::string Table::cancelOptionalModal() {
     state_.doorSwingsSelectedUids.clear();
     state_.pendingMoveMarkChoice = false;
     state_.moveMarkSourcePlayer = -1;
+    state_.pendingLeadTheAssaultModal = false;
+    state_.pendingScorpionEnforcerChoice = false;
     state_.pendingAbilitySourceUid = 0;
     state_.lastActionLog = "Canceled ability prompt (ability remains available this turn).";
     return state_.lastActionLog;
@@ -4984,6 +5118,217 @@ std::string Table::completeObjective2() {
     return state_.lastActionLog;
 }
 
+std::string Table::leadTheAssault(std::uint32_t seed) {
+    std::string reason;
+    if (!canLeadTheAssault(&reason)) {
+        state_.lastActionLog = reason;
+        return state_.lastActionLog;
+    }
+
+    state_.leadTheAssaultUsedThisTurn = true;
+    state_.leadTheAssaultRevealed.clear();
+
+    int totalRecruit = 0;
+    int totalAttack = 0;
+    std::string flippedDesc;
+
+    for (int pIdx = 0; pIdx < state_.playerCount; ++pIdx) {
+        if (pIdx >= static_cast<int>(state_.players.size())) break;
+        const PlayerState& ps = state_.players[static_cast<size_t>(pIdx)];
+        if (!ps.alive || ps.escapedInChoppa) continue;
+
+        const std::string deckZid = playerZone(pIdx, "deck");
+        const std::string discZid = playerZone(pIdx, "discard");
+        const Vec2 deckPos = zoneCenterPos(deckZid, {2002.f, 1367.f});
+        const Vec2 discPos = zoneCenterPos(discZid, {2207.f, 1367.f});
+
+        Pile* pDeck = findZonePile(deckZid);
+        if (!pDeck || pDeck->cards.empty()) {
+            if (Pile* pDisc = findZonePile(discZid); pDisc && !pDisc->cards.empty()) {
+                std::mt19937 rng(seed + static_cast<std::uint32_t>(pIdx * 37 + 11));
+                std::vector<CardInst> recycled = std::move(pDisc->cards);
+                pDisc->cards.clear();
+                for (auto& c : recycled) {
+                    c.faceUp = false;
+                    c.attached = false;
+                }
+                std::shuffle(recycled.begin(), recycled.end(), rng);
+                Pile& newDeck = ensureZonePile(deckZid, deckPos, "");
+                newDeck.cards = std::move(recycled);
+                pDeck = &newDeck;
+            }
+        }
+        if (!pDeck || pDeck->cards.empty()) continue;
+
+        CardInst top = pDeck->cards.back();
+        pDeck->cards.pop_back();
+        if (pDeck->cards.empty()) {
+            const int idx = indexOf(pDeck->id);
+            if (idx >= 0) {
+                visuals_.erase(pDeck->id);
+                state_.piles.erase(state_.piles.begin() + idx);
+            }
+        }
+        top.faceUp = true;
+        top.attached = false;
+
+        Pile& pDisc = ensureZonePile(discZid, discPos, "");
+        pDisc.cards.push_back(top);
+        queueCardFlight(top, deckPos, discPos, false, true, pIdx);
+
+        const CardDef& cd = catalog_.card(top.def);
+        const int pRec = std::max(0, cd.recruit);
+        const int pAtk = std::max(0, cd.attack);
+        totalRecruit += pRec;
+        totalAttack += pAtk;
+
+        state_.leadTheAssaultRevealed.push_back(
+            RevealedDeckCardEntry{pIdx, top, pAtk, true});
+
+        if (!flippedDesc.empty()) flippedDesc += ", ";
+        flippedDesc += "P" + std::to_string(pIdx + 1) + " flipped " +
+                       (cd.title.empty() ? cd.name : cd.title) + " (" + std::to_string(pRec) +
+                       " * / " + std::to_string(pAtk) + " ///)";
+    }
+
+    const bool success = (totalAttack >= totalRecruit);
+    state_.leadTheAssaultTotalAttack = totalAttack;
+    state_.leadTheAssaultTotalRecruit = totalRecruit;
+    state_.leadTheAssaultSucceeded = success;
+
+    std::string log = "Lead the Assault [" + flippedDesc + " -> Total: " +
+                      std::to_string(totalAttack) + " /// Attack vs " +
+                      std::to_string(totalRecruit) + " * Recruit]: ";
+
+    if (success) {
+        // Check Objective 1 Event ("Where the Hell is Special Weapons?!?"):
+        // "If you would complete the Objective, discard an Event in Operations instead."
+        std::optional<CardInst> eventInOps;
+        Vec2 fromPos{1300.f, 548.f};
+        for (size_t i = 0; i < state_.piles.size(); ++i) {
+            Pile& ops = state_.piles[i];
+            if (ops.zone != "testing") continue;
+            for (size_t ci = 0; ci < ops.cards.size(); ++ci) {
+                if (isEventDef(ops.cards[ci].def)) {
+                    fromPos = ops.pos;
+                    eventInOps = ops.cards[ci];
+                    ops.cards.erase(ops.cards.begin() + static_cast<std::ptrdiff_t>(ci));
+                    if (ops.cards.empty()) {
+                        visuals_.erase(ops.id);
+                        state_.piles.erase(state_.piles.begin() + static_cast<std::ptrdiff_t>(i));
+                    }
+                    break;
+                }
+            }
+            if (eventInOps) break;
+        }
+
+        if (eventInOps) {
+            CardInst ev = *eventInOps;
+            ev.faceUp = true;
+            ev.attached = false;
+            Pile& discHaz =
+                ensureZonePile("discard_hazards", {2150.f, 545.f}, "Discarded Hazards/Events");
+            discHaz.cards.push_back(ev);
+            queueCardFlight(ev, fromPos, discHaz.pos, true, true);
+            log += "SUCCESS! Discarded Event in Operations (Where the Hell is Special Weapons?!?) instead of completing Objective 1!";
+        } else {
+            // Discard Assault The Stronghold (def 124) from Operations and complete Objective 1!
+            std::optional<CardInst> atsCard;
+            for (size_t i = 0; i < state_.piles.size(); ++i) {
+                Pile& ops = state_.piles[i];
+                if (ops.zone != "testing") continue;
+                for (size_t ci = 0; ci < ops.cards.size(); ++ci) {
+                    if (ops.cards[ci].def == 124) {
+                        fromPos = ops.pos;
+                        atsCard = ops.cards[ci];
+                        ops.cards.erase(ops.cards.begin() + static_cast<std::ptrdiff_t>(ci));
+                        if (ops.cards.empty()) {
+                            visuals_.erase(ops.id);
+                            state_.piles.erase(state_.piles.begin() +
+                                               static_cast<std::ptrdiff_t>(i));
+                        }
+                        break;
+                    }
+                }
+                if (atsCard) break;
+            }
+            if (atsCard) {
+                CardInst ats = *atsCard;
+                ats.faceUp = true;
+                ats.attached = false;
+                Pile& discHaz =
+                    ensureZonePile("discard_hazards", {2150.f, 545.f}, "Discarded Hazards/Events");
+                discHaz.cards.push_back(ats);
+                queueCardFlight(ats, fromPos, discHaz.pos, true, true);
+            }
+            if (state_.currentObjective == 1) {
+                advanceObjectiveStack();
+            }
+            log += "OBJECTIVE 1 COMPLETE! Assault The Stronghold discarded -> Now on Objective 2: Personal Little War!";
+        }
+    } else {
+        log += "FAILED (Attack < Recruit) -> P" + std::to_string(state_.activePlayer + 1) +
+               " draws a Strike!";
+        drawStrikeAgainstPlayer(state_.activePlayer, seed + 99u, log);
+    }
+
+    state_.leadTheAssaultSummary = log;
+    if (!state_.leadTheAssaultRevealed.empty() && !state_.pendingSacrificeChoice &&
+        !state_.pendingCoverMeChoice) {
+        state_.pendingLeadTheAssaultModal = true;
+    }
+
+    syncStateFromZones();
+    state_.lastActionLog = log;
+    recordMove("LEAD_THE_ASSAULT", "Assault The Stronghold",
+               static_cast<int>(state_.leadTheAssaultRevealed.size()), "testing",
+               success ? "discard_hazards" : activePlayerZone("strikes"), 1, true, log);
+    return log;
+}
+
+std::string Table::resolveScorpionEnforcerChoice(bool discardTopCard) {
+    if (!state_.pendingScorpionEnforcerChoice) return "No Scorpion Enforcer choice pending.";
+    state_.pendingScorpionEnforcerChoice = false;
+
+    const std::string deckZid = activePlayerZone("deck");
+    const std::string discZid = activePlayerZone("discard");
+    Pile* dk = findZonePile(deckZid);
+    if (!dk || dk->cards.empty()) {
+        return "Deck is empty.";
+    }
+
+    const CardInst top = dk->top();
+    const CardDef& d = catalog_.card(top.def);
+    const std::string title = d.title.empty() ? d.name : d.title;
+
+    if (discardTopCard) {
+        const Vec2 fromPos = dk->pos;
+        CardInst c = dk->cards.back();
+        dk->cards.pop_back();
+        if (dk->cards.empty()) {
+            const int idx = indexOf(dk->id);
+            if (idx >= 0) {
+                visuals_.erase(dk->id);
+                state_.piles.erase(state_.piles.begin() + idx);
+            }
+        }
+        c.faceUp = true;
+        c.attached = false;
+        Pile& disc = ensureZonePile(discZid, {2207.f, 1367.f}, "");
+        disc.cards.push_back(c);
+        queueCardFlight(c, fromPos, disc.pos, true, true);
+        syncStateFromZones();
+        state_.lastActionLog = "Scorpion Enforcer Death: Discarded '" + title + "' from top of Deck!";
+        recordMove("SCORPION_ENFORCER_DISCARD", title, 1, deckZid, discZid,
+                   static_cast<int>(disc.cards.size()), true, state_.lastActionLog);
+    } else {
+        syncStateFromZones();
+        state_.lastActionLog = "Scorpion Enforcer Death: Kept '" + title + "' on top of Deck.";
+    }
+    return state_.lastActionLog;
+}
+
 std::string Table::fightEnemy(PileId targetPileId, std::uint32_t seed) {
     if (state_.phase != TurnPhase::ActionPhase) {
         return "Fighting enemies is only allowed during the Action Phase.";
@@ -5395,6 +5740,50 @@ std::string Table::fightEnemy(PileId targetPileId, std::uint32_t seed) {
             triggerMandatoryCost1Kill(state_.marksCount, "Nothing On Earth Death");
         }
         break;
+    case 125: { // Scorpion Enforcer: Death: Reveal top card of your deck; you may discard it. Ongoing (El Scorpio 126): El Scorpio strikes!
+        for (const auto& ep : state_.piles) {
+            if (!ep.cards.empty() && ep.top().faceUp && ep.top().def == 126 &&
+                (ep.zone == "combat" || wildsIndexFromZone(ep.zone) >= 0)) {
+                log += " [El Scorpio Ongoing: Scorpion Enforcer killed -> El Scorpio strikes!]";
+                drawStrikeAgainstPlayer(state_.activePlayer, seed + 61u, log);
+                if (state_.phase == TurnPhase::Defeat ||
+                    !state_.players[static_cast<size_t>(state_.activePlayer)].alive) {
+                    break;
+                }
+            }
+        }
+        if (state_.phase != TurnPhase::Defeat &&
+            state_.players[static_cast<size_t>(state_.activePlayer)].alive) {
+            const std::string deckZid = activePlayerZone("deck");
+            const std::string discZid = activePlayerZone("discard");
+            Pile* dk = findZonePile(deckZid);
+            if (!dk || dk->cards.empty()) {
+                if (Pile* ds = findZonePile(discZid); ds && !ds->cards.empty()) {
+                    std::mt19937 rng(seed + 89u);
+                    std::vector<CardInst> recycled = std::move(ds->cards);
+                    ds->cards.clear();
+                    for (auto& rc : recycled) {
+                        rc.faceUp = false;
+                        rc.attached = false;
+                    }
+                    std::shuffle(recycled.begin(), recycled.end(), rng);
+                    Pile& newDk = ensureZonePile(deckZid, {2002.f, 1367.f}, "");
+                    newDk.cards = std::move(recycled);
+                    dk = &newDk;
+                }
+            }
+            if (dk && !dk->cards.empty() && !state_.pendingSacrificeChoice &&
+                !state_.pendingCoverMeChoice) {
+                state_.scorpionEnforcerRevealedCard = dk->top();
+                state_.pendingScorpionEnforcerChoice = true;
+                const CardDef& topD = catalog_.card(dk->top().def);
+                log += " [Scorpion Enforcer Death: Revealed '" +
+                       (topD.title.empty() ? topD.name : topD.title) +
+                       "' on top of Deck — choose whether to discard it!]";
+            }
+        }
+        break;
+    }
     case 208: // Young Blood: Defensive Adaptations (unless Tech in hand/played, draw 2 fewer cards)
         if (!containsStr(state_.roundHandClasses, "Tech") &&
             !containsStr(state_.playedClasses, "Tech")) {
@@ -6022,6 +6411,7 @@ std::string Table::resolveCleanupPhase(std::uint32_t seed) {
     state_.abilityUsesThisTurn.clear();
     state_.canScanWithRecruitThisTurn = false;
     state_.putGainedCardsOnDeckThisTurn = false;
+    state_.leadTheAssaultUsedThisTurn = false;
     state_.nextGainRedirectPlayer = -1;
     state_.gainedCardUidsThisTurn.clear();
     if (state_.skipNextEnemyPhase) {

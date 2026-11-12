@@ -310,6 +310,10 @@ void App::handleEvent(const SDL_Event& e) {
                                 inspectPile_ = hit;
                             }
                             showToast(msg);
+                        } else if (ph == TurnPhase::ActionPhase && p->zone == "testing" &&
+                                   table_->canLeadTheAssault()) {
+                            table_->checkpoint();
+                            showToast(table_->leadTheAssault(rng_()));
                         } else if (p->top().faceUp) {
                             inspectCardDef_ = p->top().def;
                             inspectPile_ = hit;

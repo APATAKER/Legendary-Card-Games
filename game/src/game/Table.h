@@ -170,6 +170,7 @@ struct TableState {
     bool skipEnemyPhaseThisTurn = false;
     bool canScanWithRecruitThisTurn = false;
     bool putGainedCardsOnDeckThisTurn = false;
+    bool leadTheAssaultUsedThisTurn = false;
     int nextGainRedirectPlayer = -1;
     std::vector<std::uint32_t> gainedCardUidsThisTurn;
 
@@ -228,6 +229,18 @@ struct TableState {
     std::vector<std::uint32_t> doorSwingsSelectedUids;
     bool pendingMoveMarkChoice = false;
     int moveMarkSourcePlayer = -1;
+
+    // Lead the Assault (id 124 Assault The Stronghold): Informational flipped-deck-cards summary modal
+    bool pendingLeadTheAssaultModal = false;
+    std::vector<RevealedDeckCardEntry> leadTheAssaultRevealed;
+    int leadTheAssaultTotalAttack = 0;
+    int leadTheAssaultTotalRecruit = 0;
+    bool leadTheAssaultSucceeded = false;
+    std::string leadTheAssaultSummary;
+
+    // Scorpion Enforcer (id 125) Death: Reveal top card of your deck; you may discard it
+    bool pendingScorpionEnforcerChoice = false;
+    CardInst scorpionEnforcerRevealedCard{};
 
     std::vector<std::string> playedClasses;
     std::vector<std::string> playedTeams;
@@ -306,6 +319,9 @@ public:
     bool isWildsSlotSwappable(int slotIdx) const;
     int countDiscardedEvents() const;          // Number of Event cards in discard_hazards
     bool canCompleteObjective2() const;
+    bool hasAssaultTheStrongholdInOperations() const;
+    int countEventsInOperations() const;
+    bool canLeadTheAssault(std::string* reasonOut = nullptr) const;
     int expectedStrikesThisTurn(int* rawStrikesOut = nullptr, int* avoidOut = nullptr) const;
     bool isCardKilledInPlayed(std::uint32_t cardUid) const;
     bool isCardStatsSwapped(std::uint32_t cardUid) const;
@@ -346,6 +362,8 @@ public:
     void toggleDoorSwingsCard(std::uint32_t cardUid);
     std::string resolveDoorSwingsChoice(std::uint32_t seed);
     std::string resolveMoveMarkChoice(int fromPlayerIdx, int toPlayerIdx);
+    void dismissLeadTheAssaultModal() { state_.pendingLeadTheAssaultModal = false; }
+    std::string resolveScorpionEnforcerChoice(bool discardTopCard);
 
     // --- physical tabletop operations (call checkpoint() once per user action) --
     void checkpoint();
@@ -405,6 +423,7 @@ public:
     std::string scanWilds(PileId targetPileId, std::uint32_t seed);
     std::string fightEnemy(PileId targetPileId, std::uint32_t seed);
     std::string completeObjective2();
+    std::string leadTheAssault(std::uint32_t seed);
     std::string resolveSacrificeChoice(int chosenPlayerIdx);
     std::string resolveStrikePhase(std::uint32_t seed);
     std::string resolveCleanupPhase(std::uint32_t seed);

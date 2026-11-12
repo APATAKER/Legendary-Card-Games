@@ -776,6 +776,26 @@ void App::renderTacticalHUD() {
                 }
                 ImGui::EndDisabled();
             }
+            if (table_->hasAssaultTheStrongholdInOperations()) {
+                const bool canAssault = table_->canLeadTheAssault();
+                const int opsEvents = table_->countEventsInOperations();
+                std::string assaultLbl = st.leadTheAssaultUsedThisTurn
+                                             ? "Lead the Assault (Used This Turn)"
+                                             : "Attempt 'Lead the Assault' (Once/Turn)";
+                if (!st.leadTheAssaultUsedThisTurn && opsEvents > 0) {
+                    assaultLbl += " [Clears Event in Ops]";
+                }
+                ImGui::BeginDisabled(!canAssault);
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.44f, 0.24f, 0.95f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.56f, 0.32f, 1.00f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.14f, 0.36f, 0.20f, 1.00f));
+                if (ImGui::Button(assaultLbl.c_str(), ImVec2(-1.f, 0.f))) {
+                    table_->checkpoint();
+                    showToast(table_->leadTheAssault(rng_()));
+                }
+                ImGui::PopStyleColor(3);
+                ImGui::EndDisabled();
+            }
             if (ImGui::Button("End Action Phase -> Strikes [Enter]", ImVec2(-1.f, 0.f))) {
                 showToast(table_->stepPhase(rng_()));
             }
@@ -1892,6 +1912,76 @@ void App::renderAbilityModals() {
         }
         ImGui::End();
     }
+
+    // 12. ASSAULT THE STRONGHOLD (id 124): Lead the Assault deck flip results modal
+    if (st.pendingLeadTheAssaultModal) {
+        ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(760.f, 0.f), ImGuiCond_Always);
+        if (ImGui::Begin("LEAD THE ASSAULT — DECK FLIP RESULTS###LeadAssaultModal", nullptr,
+                         flags)) {
+            ImGui::TextColored(
+                ImVec4(0.95f, 0.85f, 0.35f, 1.f),
+                "Each player flipped the top card of their deck into their discard pile:");
+            ImGui::Separator();
+            for (const auto& entry : st.leadTheAssaultRevealed) {
+                const int defId = entry.card.def;
+                if (defId >= 0) {
+                    const CardDef& d = catalog_.card(defId);
+                    ImGui::BulletText("Player %d flipped: %s  (Printed: %d /// Attack  |  %d * Recruit)",
+                                      entry.playerIdx + 1, d.name.c_str(), std::max(0, d.attack),
+                                      std::max(0, d.recruit));
+                } else {
+                    ImGui::BulletText("Player %d: [Deck & Discard Empty — 0 ///, 0 *]",
+                                      entry.playerIdx + 1);
+                }
+            }
+            ImGui::Separator();
+            ImGui::Text("Total Printed Attack: %d ///   vs   Total Printed Recruit: %d *",
+                        st.leadTheAssaultTotalAttack, st.leadTheAssaultTotalRecruit);
+            ImGui::Spacing();
+            const ImVec4 resColor = st.leadTheAssaultSucceeded
+                                        ? ImVec4(0.35f, 0.96f, 0.52f, 1.f)
+                                        : ImVec4(0.98f, 0.38f, 0.38f, 1.f);
+            ImGui::TextColored(resColor, "%s", st.leadTheAssaultSummary.c_str());
+            ImGui::Spacing();
+            if (ImGui::Button("Acknowledge & Continue", ImVec2(-1.f, 36.f))) {
+                table_->dismissLeadTheAssaultModal();
+            }
+        }
+        ImGui::End();
+    }
+
+    // 13. SCORPION ENFORCER (id 125): Death — Reveal top card of deck; may discard it
+    if (st.pendingScorpionEnforcerChoice) {
+        ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(720.f, 0.f), ImGuiCond_Always);
+        if (ImGui::Begin("SCORPION ENFORCER DEATH — TOP CARD OF DECK###ScorpionEnforcerModal",
+                         nullptr, flags)) {
+            const CardDef& rdef = catalog_.card(st.scorpionEnforcerRevealedCard.def);
+            ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.32f, 1.f),
+                               "Scorpion Enforcer Death Trigger — Top card of P%d's Deck revealed:",
+                               st.activePlayer + 1);
+            ImGui::Separator();
+            ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.62f, 1.f), "%s  (%d *  |  %d ///)",
+                               rdef.name.c_str(), std::max(0, rdef.recruit),
+                               std::max(0, rdef.attack));
+            if (!rdef.rulesText.empty()) {
+                ImGui::TextWrapped("%s", rdef.rulesText.c_str());
+            }
+            ImGui::Separator();
+            if (ImGui::Button("Discard Top Card to Discard Pile", ImVec2(-1.f, 36.f))) {
+                table_->checkpoint();
+                showToast(table_->resolveScorpionEnforcerChoice(true));
+            }
+            if (ImGui::Button("Keep Card on Top of Deck", ImVec2(-1.f, 36.f))) {
+                table_->checkpoint();
+                showToast(table_->resolveScorpionEnforcerChoice(false));
+            }
+        }
+        ImGui::End();
+    }
 }
 
 void App::renderContextMenu() {
@@ -2052,6 +2142,16 @@ void App::renderContextMenu() {
                     : (top.def == 114 ? "Board The Choppa! (Spend 3 *)" : "Fight / Resolve Card");
             if (ImGui::MenuItem(fightLbl, "Double-Click")) {
                 showToast(table_->fightEnemy(p->id, rng_()));
+            }
+            ImGui::Separator();
+        } else if (p->zone == "testing" && table_->hasAssaultTheStrongholdInOperations()) {
+            const bool canAssault = table_->canLeadTheAssault();
+            const char* assaultMenuLbl = st.leadTheAssaultUsedThisTurn
+                                             ? "Lead the Assault (Already Used This Turn)"
+                                             : "Attempt 'Lead the Assault' (Once Per Turn)";
+            if (ImGui::MenuItem(assaultMenuLbl, "Double-Click", false, canAssault)) {
+                table_->checkpoint();
+                showToast(table_->leadTheAssault(rng_()));
             }
             ImGui::Separator();
         }

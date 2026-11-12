@@ -1380,6 +1380,97 @@ int runMechanicsVerification(const std::filesystem::path& reportPath) {
         t.activateCardAbility(t.find(p30)->top().uid, 2905u);
         check(t.state().putGainedCardsOnDeckThisTurn,
               "#30 Luck Is My Specialty [Leadership]: Activated ability puts gained cards on top of Deck this turn");
+
+        // 6E. BUG-0002: #124 Assault The Stronghold & Predator 2 Objective 1 (War Zone)
+        t.reset(buildGameSetup(catalog, lay1, 2910u, cfg1));
+        clearWildsAndCombat(t);
+        t.mutableState().setupConfig.movie = 2; // Predator 2 (The Streets of Los Angeles)
+        t.mutableState().currentObjective = 1;
+        t.mutableState().phase = TurnPhase::ActionPhase;
+
+        // Place #124 Assault The Stronghold face-down in wilds_0 and scan it
+        t.mutableState().attackPool = 10;
+        const PileId w0Assault = placeSingleInZone(t, 124, "wilds_0", false, false);
+        t.scanWilds(w0Assault, 2911u);
+        check(t.hasAssaultTheStrongholdInOperations(),
+              "BUG-0002 (Reveal -> Operations): Scanning #124 Assault The Stronghold in the Wilds moves it to Operations ('testing' zone)");
+        check(t.canLeadTheAssault(),
+              "BUG-0002 (Lead the Assault ready): canLeadTheAssault() is true during ActionPhase when #124 is in Operations");
+
+        // Reveal Event #127 (Where the Hell is Special Weapons?!?) in wilds_1 during Predator 2 Objective 1
+        const PileId w1Event = placeSingleInZone(t, 127, "wilds_1", false, false);
+        t.scanWilds(w1Event, 2912u);
+        check(t.countEventsInOperations() == 1,
+              "Objective 1 War Zone Event (#127 Where the Hell is Special Weapons?!?): Moves to Operations on reveal");
+
+        // Attempt 1: Put #225 Experience (1 *, 0 ///) on top of P1's deck -> Attack (0) < Recruit (1) -> FAILS & draws a Strike
+        if (Pile* p0Deck = t.findZonePile("p0_deck")) {
+            CardInst expCard{};
+            expCard.uid = t.mutableState().nextUid++;
+            expCard.def = 225; // Experience: 1 *, 0 ///
+            expCard.faceUp = false;
+            p0Deck->cards.push_back(expCard);
+        }
+        const int dmgBeforeFail = t.state().players[0].strikeDamage;
+        t.leadTheAssault(2913u);
+        check(t.state().pendingLeadTheAssaultModal && !t.state().leadTheAssaultSucceeded,
+              "BUG-0002 (Failed Assault): Flipping 0 /// vs 1 * fails Lead the Assault and opens results modal");
+        check(t.state().leadTheAssaultUsedThisTurn && !t.canLeadTheAssault(),
+              "BUG-0002 (Once Per Turn limit): Lead the Assault cannot be attempted a second time in the same turn");
+        check(t.state().players[0].strikeDamage >= dmgBeforeFail && t.hasAssaultTheStrongholdInOperations(),
+              "BUG-0002 (Failed Assault penalty): #124 remains in Operations and active player drew a Strike");
+        t.dismissLeadTheAssaultModal();
+
+        // Attempt 2 (Next turn): Put #224 Brute Strength (0 *, 1 ///) on top of P1's deck while Event #127 is in Operations
+        t.mutableState().leadTheAssaultUsedThisTurn = false;
+        if (Pile* p0Deck = t.findZonePile("p0_deck")) {
+            CardInst cmbCard{};
+            cmbCard.uid = t.mutableState().nextUid++;
+            cmbCard.def = 224; // Brute Strength: 0 *, 1 ///
+            cmbCard.faceUp = false;
+            p0Deck->cards.push_back(cmbCard);
+        }
+        t.leadTheAssault(2914u);
+        check(t.state().leadTheAssaultSucceeded && t.countEventsInOperations() == 0 &&
+                  t.hasAssaultTheStrongholdInOperations() && t.state().currentObjective == 1,
+              "Objective 1 War Zone (Event in Operations): Successful Lead the Assault discards the Event in Operations instead of completing Objective 1");
+        t.dismissLeadTheAssaultModal();
+
+        // Attempt 3 (Next turn, no Event in Operations): Put #224 Brute Strength (0 *, 1 ///) on top of P1's deck -> Completes Objective 1!
+        t.mutableState().leadTheAssaultUsedThisTurn = false;
+        if (Pile* p0Deck = t.findZonePile("p0_deck")) {
+            CardInst cmbCard2{};
+            cmbCard2.uid = t.mutableState().nextUid++;
+            cmbCard2.def = 224; // Brute Strength: 0 *, 1 ///
+            cmbCard2.faceUp = false;
+            p0Deck->cards.push_back(cmbCard2);
+        }
+        t.leadTheAssault(2915u);
+        check(t.state().leadTheAssaultSucceeded && !t.hasAssaultTheStrongholdInOperations() &&
+                  t.state().currentObjective == 2,
+              "BUG-0002 (Complete Objective 1): Successful Lead the Assault discards #124 Assault The Stronghold and advances to Objective 2");
+        t.dismissLeadTheAssaultModal();
+
+        // Test #125 Scorpion Enforcer Death trigger + #126 El Scorpio Ongoing Strike trigger
+        clearWildsAndCombat(t);
+        t.mutableState().attackPool = 10;
+        const PileId scorpioPid = placeSingleInZone(t, 126, "wilds_0", true, false); // El Scorpio (5 ///) face-up
+        (void)scorpioPid;
+        const PileId enforcerPid = placeSingleInZone(t, 125, "wilds_1", true, false); // Scorpion Enforcer (3 ///) face-up
+        if (Pile* p0Deck = t.findZonePile("p0_deck")) {
+            CardInst topCard{};
+            topCard.uid = t.mutableState().nextUid++;
+            topCard.def = 225;
+            topCard.faceUp = false;
+            p0Deck->cards.push_back(topCard);
+        }
+        t.fightEnemy(enforcerPid, 2916u);
+        check(t.state().pendingScorpionEnforcerChoice &&
+                  t.state().scorpionEnforcerRevealedCard.def == 225,
+              "#125 Scorpion Enforcer Death: Reveals top card of active player's deck and prompts whether to discard it");
+        t.resolveScorpionEnforcerChoice(true);
+        check(!t.state().pendingScorpionEnforcerChoice,
+              "#125 Scorpion Enforcer Death: Resolving choice discards the revealed top card to discard pile");
     }
 
     out << "\n=============================================================\n";

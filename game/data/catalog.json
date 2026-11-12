@@ -2335,7 +2335,19 @@
                       "group":  "setup-p2",
                       "src":  "05_predator_2_humans/Location_StreetsOfLosAngeles.jpg",
                       "land":  false,
-                      "qty":  1
+                      "qty":  1,
+                      "title":  "THE STREETS OF LOS ANGELES",
+                      "subtitle":  "LOCATION",
+                      "rarity":  "Mission",
+                      "cost":  -1,
+                      "recruit":  -1,
+                      "attack":  -1,
+                      "classType":  "",
+                      "team":  "",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "Hazard 1 (Lions) / Hazard 2 (The Tigers) / Hazard 3 (The Bears. Oh my!): Put the Hazard card beneath your Avatar as a Mark. For each Mark you have, add an Enemy card to the Wilds."
                   },
                   {
                       "id":  99,
@@ -2343,7 +2355,19 @@
                       "group":  "setup-p2",
                       "src":  "05_predator_2_humans/Objective1WarZone.jpg",
                       "land":  false,
-                      "qty":  1
+                      "qty":  1,
+                      "title":  "WAR ZONE",
+                      "subtitle":  "OBJECTIVE 1",
+                      "rarity":  "Mission",
+                      "cost":  -1,
+                      "recruit":  -1,
+                      "attack":  -1,
+                      "classType":  "",
+                      "team":  "",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "Objective: Assault the Stronghold.\nEvent (Where the Hell is Special Weapons?!?): Move the Event card to Operations. If you would complete the Objective, discard an Event in Operations instead."
                   },
                   {
                       "id":  100,
@@ -2351,7 +2375,19 @@
                       "group":  "setup-p2",
                       "src":  "05_predator_2_humans/Objective2PersonalLittleWar.jpg",
                       "land":  false,
-                      "qty":  1
+                      "qty":  1,
+                      "title":  "PERSONAL LITTLE WAR",
+                      "subtitle":  "OBJECTIVE 2",
+                      "rarity":  "Mission",
+                      "cost":  -1,
+                      "recruit":  -1,
+                      "attack":  -1,
+                      "classType":  "",
+                      "team":  "",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "Objective: Investigate the Gang Killings.\nEvent (A New Player in Town): Move one of your Found Clues to the Lost pile or draw two Strikes. (If you can't move a Clue, you must draw two Strikes.)"
                   },
                   {
                       "id":  101,
@@ -2359,7 +2395,19 @@
                       "group":  "setup-p2",
                       "src":  "05_predator_2_humans/Objective3Other-WorldLife-Form.jpg",
                       "land":  false,
-                      "qty":  1
+                      "qty":  1,
+                      "title":  "OTHER-WORLD LIFE-FORM",
+                      "subtitle":  "OBJECTIVE 3",
+                      "rarity":  "Mission",
+                      "cost":  -1,
+                      "recruit":  -1,
+                      "attack":  -1,
+                      "classType":  "",
+                      "team":  "",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "Objective: Survive... One Way or the Other.\nEvent (Remarkable Weaponry): Put the Event card beneath your Avatar as a Mark. Pay 6 [Recruit] -> Discard one of your Event Marks."
                   },
                   {
                       "id":  102,
@@ -2808,7 +2856,19 @@
                       "group":  "mini-mini-deck-predator-2-humans-act-1-war-zone",
                       "src":  "05_predator_2_humans/01_act_1_war_zone/Act1_AssaultTheStronghold.jpg",
                       "land":  false,
-                      "qty":  1
+                      "qty":  1,
+                      "title":  "ASSAULT THE STRONGHOLD",
+                      "subtitle":  "OBJECTIVE 1 - GOAL",
+                      "rarity":  "Goal",
+                      "cost":  -1,
+                      "recruit":  -1,
+                      "attack":  -1,
+                      "classType":  "",
+                      "team":  "",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "Reveal: Move to Operations.\nOperations: Once each turn, you may attempt to 'Lead the Assault.' (Each player flips the top card of their deck into their discard pile. If those cards have at least as much total printed [Attack] as [Recruit], discard this and complete the Objective. Otherwise, you draw a Strike.)"
                   },
                   {
                       "id":  125,
@@ -2816,7 +2876,19 @@
                       "group":  "mini-mini-deck-predator-2-humans-act-1-war-zone",
                       "src":  "05_predator_2_humans/01_act_1_war_zone/Act1_ScorpionEnforcer.jpg",
                       "land":  false,
-                      "qty":  4
+                      "qty":  4,
+                      "title":  "SCORPION ENFORCER",
+                      "subtitle":  "ENEMY - HUMAN",
+                      "rarity":  "Enemy",
+                      "cost":  -1,
+                      "recruit":  -1,
+                      "attack":  3,
+                      "classType":  "",
+                      "team":  "",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "Death: Reveal the top card of your deck. You may discard it."
                   },
                   {
                       "id":  126,
@@ -2824,7 +2896,19 @@
                       "group":  "mini-mini-deck-predator-2-humans-act-1-war-zone",
                       "src":  "05_predator_2_humans/01_act_1_war_zone/Act1_ElScorpio.jpg",
                       "land":  false,
-                      "qty":  1
+                      "qty":  1,
+                      "title":  "EL SCORPIO",
+                      "subtitle":  "ENEMY - HUMAN",
+                      "rarity":  "Enemy",
+                      "cost":  -1,
+                      "recruit":  -1,
+                      "attack":  5,
+                      "classType":  "",
+                      "team":  "",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "Ongoing: Each time a Scorpion Enforcer is killed, El Scorpio strikes."
                   },
                   {
                       "id":  127,
@@ -2832,7 +2916,19 @@
                       "group":  "mini-mini-deck-predator-2-humans-act-1-war-zone",
                       "src":  "05_predator_2_humans/01_act_1_war_zone/Act1_Event.jpg",
                       "land":  false,
-                      "qty":  2
+                      "qty":  2,
+                      "title":  "EVENT",
+                      "subtitle":  "WAR ZONE - 1",
+                      "rarity":  "Event",
+                      "cost":  -1,
+                      "recruit":  -1,
+                      "attack":  -1,
+                      "classType":  "",
+                      "team":  "",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "When revealed, execute the Event effect on the current Objective, then put this card into Discarded Hazards/Events."
                   },
                   {
                       "id":  128,
@@ -2840,7 +2936,19 @@
                       "group":  "mini-mini-deck-predator-2-humans-act-1-war-zone",
                       "src":  "05_predator_2_humans/01_act_1_war_zone/Act1_Hazard.jpg",
                       "land":  false,
-                      "qty":  1
+                      "qty":  1,
+                      "title":  "HAZARD!",
+                      "subtitle":  "WAR ZONE - 1",
+                      "rarity":  "Hazard",
+                      "cost":  -1,
+                      "recruit":  -1,
+                      "attack":  -1,
+                      "classType":  "",
+                      "team":  "",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "When revealed, becomes a Mark on the active player and triggers the next Hazard ability on the Location."
                   },
                   {
                       "id":  129,
