@@ -311,6 +311,19 @@ void App::renderWorld() {
         }
     }
 
+    // Personal Little War (Predator 2 Objective 2): Side-by-side Found Clues (Blue) & Lost Clues (Red) slot pads in Operations
+    if ((st.setupConfig.movie == 2 && st.currentObjective == 2) ||
+        table_->countFoundCluesInOperations() > 0 ||
+        table_->countLostCluesInOperations() > 0) {
+        const Vec2 slotSize{182.f, 248.f};
+        const Vec2 foundPos{1214.f, 548.5f};
+        const Vec2 lostPos{1405.f, 548.5f};
+        renderer_.fill(foundPos, slotSize, Color::rgb(0x0b192e, 0.80f), 10.f);
+        renderer_.outline(foundPos, slotSize, 0.f, 10.f, 2.2f, Color::rgb(0x3b82f6, 0.88f));
+        renderer_.fill(lostPos, slotSize, Color::rgb(0x280d12, 0.80f), 10.f);
+        renderer_.outline(lostPos, slotSize, 0.f, 10.f, 2.2f, Color::rgb(0xef4444, 0.88f));
+    }
+
     // 3. Zone highlights (when toggled on, or subtly while dragging a card)
     if (showZones_ || draggedPile_ != kNoPile) {
         const float alpha = showZones_ ? 0.55f : 0.25f;
@@ -487,6 +500,10 @@ void App::renderPile(const Pile& p, bool isHeld) {
         renderer_.outline(topPos, size, pv.angle, radius, 2.8f, Color::rgb(0x4ade80, 0.90f));
     } else if (top.attached) {
         renderer_.outline(topPos, size, pv.angle, radius, 2.5f, Color::rgb(0xf59e0b, 0.92f));
+    } else if (p.zone == "testing" && p.label == "Found Clues") {
+        renderer_.outline(topPos, size, pv.angle, radius, 3.0f, Color::rgb(0x3b82f6, 0.96f));
+    } else if (p.zone == "testing" && p.label == "Lost Clues") {
+        renderer_.outline(topPos, size, pv.angle, radius, 3.0f, Color::rgb(0xef4444, 0.96f));
     } else {
         renderer_.outline(topPos, size, pv.angle, radius, 1.2f, {0.f, 0.f, 0.f, 0.55f});
     }

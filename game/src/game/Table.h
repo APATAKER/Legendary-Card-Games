@@ -242,6 +242,11 @@ struct TableState {
     bool pendingScorpionEnforcerChoice = false;
     CardInst scorpionEnforcerRevealedCard{};
 
+    // Predator 2 Objective 2 (Personal Little War): Event "A New Player in Town" & Act 2 Enemies (#132, #133)
+    bool pendingPersonalWarEventChoice = false;
+    bool pendingThisIsDreadChoice = false;
+    int shishKebabTargetPlayer = 0;
+
     std::vector<std::string> playedClasses;
     std::vector<std::string> playedTeams;
     std::vector<std::string> playedCharacters;
@@ -322,6 +327,10 @@ public:
     bool hasAssaultTheStrongholdInOperations() const;
     int countEventsInOperations() const;
     bool canLeadTheAssault(std::string* reasonOut = nullptr) const;
+    int countFoundCluesInOperations() const;
+    int countLostCluesInOperations() const;
+    bool canDiscardEventMark(std::string* reasonOut = nullptr) const;
+    std::string discardEventMark();
     int expectedStrikesThisTurn(int* rawStrikesOut = nullptr, int* avoidOut = nullptr) const;
     bool isCardKilledInPlayed(std::uint32_t cardUid) const;
     bool isCardStatsSwapped(std::uint32_t cardUid) const;
@@ -364,6 +373,8 @@ public:
     std::string resolveMoveMarkChoice(int fromPlayerIdx, int toPlayerIdx);
     void dismissLeadTheAssaultModal() { state_.pendingLeadTheAssaultModal = false; }
     std::string resolveScorpionEnforcerChoice(bool discardTopCard);
+    std::string resolvePersonalWarEventChoice(bool moveFoundClueToLost, std::uint32_t seed);
+    std::string resolveThisIsDreadChoice(bool payRecruit, std::uint32_t seed);
 
     // --- physical tabletop operations (call checkpoint() once per user action) --
     void checkpoint();
@@ -453,6 +464,12 @@ private:
     void autoPlayHandCardsForAttack(int attackNeeded, std::string& logOut);
     void autoPlayHandCardMatchingDef(int defId, std::string& logOut);
     Pile& ensureZonePile(const std::string& zoneId, Vec2 defaultPos, const std::string& label);
+    Pile& ensureCluePileInOperations(bool found);
+    void placeClueInOperations(CardInst clue, bool found, Vec2 fromPos, bool wasFaceUp,
+                               std::uint32_t seed, std::string& logOut);
+    void checkThirdClueInOperations(std::uint32_t seed, std::string& logOut);
+    void placeShishKebabInFrontOfPlayer(CardInst card, Vec2 fromPos, bool wasFaceUp,
+                                        std::string& logOut);
     void attachCardToWildsSlot(int slotIdx, CardInst card);
     void revealAndAttachGuerrillaCamp(CardInst camp, std::string& logOut);
     void revealThreeHundredCityBlocks(CardInst card115, std::uint32_t seed, std::string& logOut);

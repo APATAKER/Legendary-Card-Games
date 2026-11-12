@@ -65,8 +65,10 @@ bool isEventDef(int defId) {
 
 bool isHazardDef(int defId) {
     return defId == 106 || defId == 113 || defId == 123 || defId == 128 || defId == 137 ||
-           defId == 147;
+            defId == 147;
 }
+
+bool isClueDef(int defId) { return defId == 129 || defId == 130 || defId == 131; }
 
 bool isBarracksCharacterDef(int defId) { return defId >= 0 && defId <= 63; }
 
@@ -432,6 +434,252 @@ bool Table::canLeadTheAssault(std::string* reasonOut) const {
     return true;
 }
 
+int Table::countFoundCluesInOperations() const {
+    int count = 0;
+    for (const auto& p : state_.piles) {
+        if (p.zone != "testing") continue;
+        const bool isLost = (p.label == "Lost Clues" || (p.label != "Found Clues" && p.pos.x >= 1309.5f));
+        if (isLost) continue;
+        for (const auto& c : p.cards) {
+            if (isClueDef(c.def)) ++count;
+        }
+    }
+    return count;
+}
+
+int Table::countLostCluesInOperations() const {
+    int count = 0;
+    for (const auto& p : state_.piles) {
+        if (p.zone != "testing") continue;
+        const bool isLost = (p.label == "Lost Clues" || (p.label != "Found Clues" && p.pos.x >= 1309.5f));
+        if (!isLost) continue;
+        for (const auto& c : p.cards) {
+            if (isClueDef(c.def)) ++count;
+        }
+    }
+    return count;
+}
+
+bool Table::canDiscardEventMark(std::string* reasonOut) const {
+    if (state_.phase != TurnPhase::ActionPhase) {
+        if (reasonOut) *reasonOut = "You can only discard an Event Mark during the Action Phase.";
+        return false;
+    }
+    if (hasPendingModal()) {
+        if (reasonOut) *reasonOut = "Resolve the active prompt first.";
+        return false;
+    }
+    bool hasEventMark = false;
+    if (const Pile* mp = findZonePile(activePlayerZone("marks"))) {
+        for (const auto& c : mp->cards) {
+            if (isEventDef(c.def)) {
+                hasEventMark = true;
+                break;
+            }
+        }
+    }
+    if (!hasEventMark) {
+        if (reasonOut) *reasonOut = "You do not have an Event Mark beneath your Avatar.";
+        return false;
+    }
+    if (state_.recruitPool < 6) {
+        if (reasonOut) *reasonOut = "Requires 6 * Recruit to discard an Event Mark.";
+        return false;
+    }
+    return true;
+}
+
+std::string Table::discardEventMark() {
+    std::string reason;
+    if (!canDiscardEventMark(&reason)) {
+        state_.lastActionLog = reason;
+        return state_.lastActionLog;
+    }
+
+    std::string autoPlayLog;
+    autoPlayHandCardsForRecruit(6, autoPlayLog);
+    state_.recruitPool -= 6;
+
+    const std::string marksZid = activePlayerZone("marks");
+    if (Pile* mp = findZonePile(marksZid)) {
+        for (size_t i = 0; i < mp->cards.size(); ++i) {
+            if (isEventDef(mp->cards[i].def)) {
+                const Vec2 fromPos = mp->pos;
+                CardInst ev = mp->cards[i];
+                mp->cards.erase(mp->cards.begin() + static_cast<std::ptrdiff_t>(i));
+                if (mp->cards.empty()) {
+                    const int idx = indexOf(mp->id);
+                    if (idx >= 0) {
+                        visuals_.erase(mp->id);
+                        state_.piles.erase(state_.piles.begin() + idx);
+                    }
+                }
+                ev.faceUp = true;
+                ev.attached = false;
+                Pile& disc =
+                    ensureZonePile("discard_hazards", {2150.f, 545.f}, "Discarded Hazards/Events");
+                disc.cards.push_back(ev);
+                queueCardFlight(ev, fromPos, disc.pos, true, true);
+                break;
+            }
+        }
+    }
+
+    syncStateFromZones();
+    state_.lastActionLog =
+        "Remarkable Weaponry: Paid 6 * Recruit -> discarded 1 Event Mark (" +
+        std::to_string(state_.marksCount) + " Mark(s) remaining)!" + autoPlayLog;
+    recordMove("DISCARD_EVENT_MARK", "Event Mark", 1, marksZid, "discard_hazards", 1, true,
+               state_.lastActionLog);
+    return state_.lastActionLog;
+}
+
+Pile& Table::ensureCluePileInOperations(bool found) {
+    const std::string targetLabel = found ? "Found Clues" : "Lost Clues";
+    const Vec2 targetPos = found ? Vec2{1214.f, 548.5f} : Vec2{1405.f, 548.5f};
+    for (int i = static_cast<int>(state_.piles.size()) - 1; i >= 0; --i) {
+        Pile& p = state_.piles[static_cast<size_t>(i)];
+        if (p.zone == "testing" && p.label == targetLabel) {
+            p.pos = targetPos;
+            return p;
+        }
+    }
+    Pile np;
+    np.id = state_.nextPileId++;
+    np.pos = targetPos;
+    np.zone = "testing";
+    np.label = targetLabel;
+    state_.piles.push_back(std::move(np));
+    (void)visual(state_.piles.back().id);
+    return state_.piles.back();
+}
+
+void Table::checkThirdClueInOperations(std::uint32_t seed, std::string& logOut) {
+    const int foundCount = countFoundCluesInOperations();
+    const int lostCount = countLostCluesInOperations();
+    if (foundCount + lostCount < 3) return;
+
+    // "Operations: If this is the third Clue, each player draws cards equal to the Found Clues.
+    //  Then discard all Clues and complete the Objective."
+    if (foundCount > 0) {
+        for (int pIdx = 0; pIdx < state_.playerCount; ++pIdx) {
+            if (pIdx >= static_cast<int>(state_.players.size())) break;
+            if (!state_.players[static_cast<size_t>(pIdx)].alive ||
+                state_.players[static_cast<size_t>(pIdx)].escapedInChoppa) {
+                continue;
+            }
+            drawPlayerCards(pIdx, foundCount,
+                            seed + static_cast<std::uint32_t>(pIdx * 37 + 19), logOut);
+        }
+    }
+
+    std::vector<std::pair<CardInst, Vec2>> cluesToDiscard;
+    for (int i = static_cast<int>(state_.piles.size()) - 1; i >= 0; --i) {
+        Pile& p = state_.piles[static_cast<size_t>(i)];
+        if (p.zone != "testing") continue;
+        for (auto it = p.cards.begin(); it != p.cards.end();) {
+            if (isClueDef(it->def)) {
+                CardInst c = *it;
+                c.faceUp = true;
+                c.attached = false;
+                cluesToDiscard.push_back({c, p.pos});
+                it = p.cards.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (p.cards.empty()) {
+            visuals_.erase(p.id);
+            state_.piles.erase(state_.piles.begin() + i);
+        }
+    }
+
+    if (!cluesToDiscard.empty()) {
+        Pile& disc = ensureZonePile("discard_hazards", {2150.f, 545.f}, "Discarded Hazards/Events");
+        for (size_t k = 0; k < cluesToDiscard.size(); ++k) {
+            disc.cards.push_back(cluesToDiscard[k].first);
+            queueCardFlight(cluesToDiscard[k].first, cluesToDiscard[k].second, disc.pos, true, true,
+                            static_cast<int>(k));
+        }
+    }
+
+    if (state_.currentObjective == 2) {
+        advanceObjectiveStack();
+    }
+    syncStateFromZones();
+
+    logOut += " [3rd Clue in Operations (" + std::to_string(foundCount) + " Found, " +
+              std::to_string(lostCount) + " Lost): Each player drew " +
+              std::to_string(foundCount) +
+              " card(s), all Clues discarded, & OBJECTIVE 2 COMPLETE -> Now on Objective 3: Other-World Life-Form!]";
+}
+
+void Table::placeClueInOperations(CardInst clue, bool found, Vec2 fromPos, bool wasFaceUp,
+                                  std::uint32_t seed, std::string& logOut) {
+    clue.faceUp = true;
+    clue.attached = false;
+    const CardDef& d = catalog_.card(clue.def);
+    Pile& cp = ensureCluePileInOperations(found);
+    const Vec2 dstPos = cp.pos;
+    cp.cards.push_back(clue);
+    queueCardFlight(clue, fromPos, dstPos, wasFaceUp, true);
+
+    logOut += " [Clue Revealed (" + (d.title.empty() ? d.name : d.title) + ") -> moved to Operations (" +
+              (found ? "Found Clues" : "Lost Clues") + " pile)!]";
+    checkThirdClueInOperations(seed, logOut);
+}
+
+void Table::placeShishKebabInFrontOfPlayer(CardInst card, Vec2 fromPos, bool wasFaceUp,
+                                           std::string& logOut) {
+    syncStateFromZones();
+    card.faceUp = true;
+    card.attached = false;
+
+    int targetP = state_.activePlayer;
+    bool foundMarked = false;
+    for (int step = 0; step < state_.playerCount; ++step) {
+        const int cand = (state_.activePlayer + step) % std::max(1, state_.playerCount);
+        if (cand < static_cast<int>(state_.players.size()) &&
+            state_.players[static_cast<size_t>(cand)].alive &&
+            !state_.players[static_cast<size_t>(cand)].escapedInChoppa &&
+            state_.players[static_cast<size_t>(cand)].marksCount > 0) {
+            targetP = cand;
+            foundMarked = true;
+            break;
+        }
+    }
+    state_.shishKebabTargetPlayer = targetP;
+
+    const Zone* cz = layout_.zone("combat");
+    const float baseY = cz ? cz->rect.center().y : 548.f;
+    const float startX = cz ? (cz->rect.x + 95.f) : 620.f;
+
+    std::vector<Pile*> czPiles;
+    for (auto& p : state_.piles) {
+        if (p.zone == "combat" && !p.cards.empty()) czPiles.push_back(&p);
+    }
+    std::sort(czPiles.begin(), czPiles.end(),
+              [](const Pile* a, const Pile* b) { return a->pos.x < b->pos.x; });
+
+    const float stepX = czPiles.size() >= 3 ? 115.f : 155.f;
+    for (size_t i = 0; i < czPiles.size(); ++i) {
+        czPiles[i]->pos = {startX + static_cast<float>(i + 1) * stepX, baseY};
+    }
+
+    Pile np;
+    np.id = state_.nextPileId++;
+    np.pos = {startX, baseY};
+    np.zone = "combat";
+    np.label = "IN FRONT OF P" + std::to_string(targetP + 1);
+    np.cards = {card};
+    state_.piles.push_back(std::move(np));
+    visual(state_.piles.back().id).flipT = 0.f;
+    queueCardFlight(card, fromPos, {startX, baseY}, wasFaceUp, true);
+
+    logOut += " [Shish Kebab revealed -> put in front of Player " + std::to_string(targetP + 1) +
+              (foundMarked ? " (Marked)!" : " (no Marked players)!") + "]";
+}
+
 Vec2 Table::zoneCenterPos(const std::string& zoneId, Vec2 fallback) const {
     if (const Pile* zp = findZonePile(zoneId)) return zp->pos;
     if (const Zone* z = layout_.zone(zoneId)) return z->rect.center();
@@ -603,8 +851,13 @@ int Table::expectedStrikesThisTurn(int* rawStrikesOut, int* avoidOut) const {
             }
         }
     }
+    const int shishOwner =
+        std::clamp(state_.shishKebabTargetPlayer, 0, std::max(0, state_.playerCount - 1));
     for (const auto& p : state_.piles) {
         if (p.zone == "combat" && !p.cards.empty() && p.top().faceUp && p.top().def != 114) {
+            if (p.top().def == 132 && state_.activePlayer != shishOwner) {
+                continue; // Shish Kebab only strikes the player it is in front of
+            }
             const CardDef& d = catalog_.card(p.top().def);
             raw += hasKeyword(d, "Double Strike") ? 2 : 1;
         }
@@ -818,6 +1071,27 @@ DropTarget Table::resolveDrop(PileId draggedId, bool freePlace) const {
         out.zone = bestZone;
         out.highlight = bestZone->rect;
         if (bestZone->kind == ZoneKind::Slot) {
+            if (bestZone->id == "testing" && !dragged->cards.empty() &&
+                isClueDef(dragged->top().def)) {
+                const bool isFoundSlot = (pos.x < bestZone->rect.center().x);
+                const std::string targetLabel = isFoundSlot ? "Found Clues" : "Lost Clues";
+                const Vec2 slotPos = isFoundSlot ? Vec2{1214.f, 548.5f} : Vec2{1405.f, 548.5f};
+                out.highlight = Rect::fromCenter(slotPos, layout_.cardSize);
+                for (int i = static_cast<int>(state_.piles.size()) - 1; i >= 0; --i) {
+                    const Pile& other = state_.piles[static_cast<size_t>(i)];
+                    if (other.id == draggedId || other.cards.empty()) continue;
+                    if (other.zone == "testing" && other.label == targetLabel) {
+                        out.kind = DropTarget::Kind::Pile;
+                        out.pile = other.id;
+                        out.pos = other.pos;
+                        return out;
+                    }
+                }
+                out.kind = DropTarget::Kind::Slot;
+                out.pos = slotPos;
+                out.quarterTurns = 0;
+                return out;
+            }
             for (int i = static_cast<int>(state_.piles.size()) - 1; i >= 0; --i) {
                 const Pile& other = state_.piles[static_cast<size_t>(i)];
                 if (other.id == draggedId || other.cards.empty()) continue;
@@ -871,6 +1145,11 @@ void Table::applyDrop(PileId draggedId, const DropTarget& t) {
     case DropTarget::Kind::Slot:
     case DropTarget::Kind::Area:
         place(draggedId, t.pos, t.zone ? t.zone->id : "", t.quarterTurns);
+        if (t.zone && t.zone->id == "testing") {
+            if (Pile* p = find(draggedId); p && !p->cards.empty() && isClueDef(p->top().def)) {
+                p->label = (t.pos.x < 1309.5f) ? "Found Clues" : "Lost Clues";
+            }
+        }
         break;
     case DropTarget::Kind::Loose:
         place(draggedId, t.pos, "", -1);
@@ -1148,6 +1427,10 @@ std::string Table::buildTacticalSnapshot() const {
     if (state_.pendingDiscardToDeckChoice) modals.push_back("DiscardToDeckChoice");
     if (state_.pendingGainCardChoice) modals.push_back("GainCardChoice");
     if (state_.pendingLikeAHunterModal) modals.push_back("LikeAHunterRevealModal");
+    if (state_.pendingLeadTheAssaultModal) modals.push_back("LeadTheAssaultModal");
+    if (state_.pendingScorpionEnforcerChoice) modals.push_back("ScorpionEnforcerChoice");
+    if (state_.pendingPersonalWarEventChoice) modals.push_back("PersonalWarEventChoice");
+    if (state_.pendingThisIsDreadChoice) modals.push_back("ThisIsDreadChoice");
     oss << "Pending Modals: " << joinVec(modals) << "\n";
 
     oss << "Squad Roster:\n";
@@ -1254,6 +1537,7 @@ std::string Table::buildBoardSnapshot() const {
             for (const auto& c : p.cards) {
                 if (anyOps) oss << " | ";
                 oss << formatCardInst(c);
+                if (!p.label.empty()) oss << " [" << p.label << "]";
                 anyOps = true;
             }
         }
@@ -1664,9 +1948,9 @@ void Table::syncStateFromZones(std::string* deltaOut) {
             // Passive turn modifiers
             int effAvoid = 0;
             if (c.def == 4 && countTurnClass("Survival") >= 2) {
-                effAvoid = 1;              // Real Nasty Habit: [Survival] Avoid 1 Strike
+                effAvoid = 1;                    // Real Nasty Habit: [Survival] Avoid 1 Strike
             } else if (c.def == 65) {
-                effAvoid = coordCount;     // In the Shadows: Call For Backup Avoid 1 Strike per Coordinate
+                effAvoid = std::min(1, coordCount); // In the Shadows: Call For Backup: Once this turn, avoid 1 Strike
             }
 
             int effFreeScan = 0;
@@ -1674,10 +1958,6 @@ void Table::syncStateFromZones(std::string* deltaOut) {
                 effFreeScan = nOtherChars; // Dug In Like An Alabama Tick: Brothers in Arms Free Scan (0..3)
             } else if (c.def == 24) {
                 effFreeScan = nSameChar;   // Enjoy the Show (Keyes): Showboat Free Scan
-            } else if (c.def == 67) {
-                effFreeScan = coordCount;  // On the Case: Call For Backup Free Scan per Coordinate
-            } else if (c.def == 85 && countTurnClass("Intel") >= 2) {
-                effFreeScan = 1;           // Stalking the Prey: [Intel] Free Scan
             }
 
             const int effCombatPen = (c.def == 9) ? 1 : 0; // Get to the Choppa!: -1 Attack to Combat Zone Enemies
@@ -1796,6 +2076,15 @@ void Table::applyDropWithLog(PileId draggedId, const DropTarget& t,
     syncStateFromZones(&delta);
     refillHQ();
 
+    if (dstZone == "testing") {
+        std::string clueLog;
+        checkThirdClueInOperations(state_.nextMoveSeq * 97u + 13u, clueLog);
+        if (!clueLog.empty()) {
+            delta += clueLog;
+            state_.lastActionLog = clueLog;
+        }
+    }
+
     // If a Strike card was manually dropped onto a player's Strikes zone and their HP dropped to <= 0, eliminate them
     int dstP = -1;
     std::string_view dstRole;
@@ -1884,6 +2173,15 @@ void Table::applyMultiDrop(const std::vector<PileId>& draggedPiles,
     std::string delta;
     syncStateFromZones(&delta);
     refillHQ();
+
+    if (dstZone == "testing") {
+        std::string clueLog;
+        checkThirdClueInOperations(state_.nextMoveSeq * 97u + 13u, clueLog);
+        if (!clueLog.empty()) {
+            delta += clueLog;
+            state_.lastActionLog = clueLog;
+        }
+    }
 
     // If a Strike card was manually dropped onto a player's Strikes zone and their HP dropped to <= 0, eliminate them
     int dstP = -1;
@@ -2104,6 +2402,19 @@ void Table::moveCardToCombatZone(CardInst card, std::uint32_t seed, std::string&
             logOut += " [Event revealed in Combat Zone -> Where the Hell is Special Weapons?!? Moved Event to Operations!]";
             return;
         }
+        if (state_.setupConfig.movie == 2 && state_.currentObjective == 3) {
+            // Predator 2 Objective 3 Event ("Remarkable Weaponry"):
+            // "Put the Event card beneath your Avatar as a Mark. Pay 6 [Recruit] -> Discard one of your Event Marks."
+            const std::string marksZid = activePlayerZone("marks");
+            Pile& marks = ensureZonePile(marksZid, {140.f, layout_.boardSize.y + 440.f}, "Marks");
+            marks.cards.push_back(card);
+            queueCardFlight(card, hillsPos, marks.pos, wasFaceUp, true);
+            syncStateFromZones();
+            logOut += " [Event (Remarkable Weaponry) revealed in Combat Zone -> placed beneath P" +
+                      std::to_string(state_.activePlayer + 1) + "'s Avatar as an Event Mark (" +
+                      std::to_string(state_.marksCount) + " total Marks)!]";
+            return;
+        }
         Pile& disc = ensureZonePile("discard_hazards", {2150.f, 545.f}, "Discarded Hazards/Events");
         disc.cards.push_back(card);
         queueCardFlight(card, hillsPos, disc.pos, wasFaceUp, true);
@@ -2115,6 +2426,16 @@ void Table::moveCardToCombatZone(CardInst card, std::uint32_t seed, std::string&
         card.attached = false;
         logOut += " [Hazard revealed in Combat Zone!]";
         resolveLocationHazard(card, seed, logOut);
+        return;
+    }
+    if (isClueDef(card.def)) {
+        // Predator 2 Objective 2 Clue (#129, #130, #131) revealed outside The Wilds -> Lost Clues pile in Operations!
+        placeClueInOperations(card, /*found=*/false, hillsPos, wasFaceUp, seed, logOut);
+        return;
+    }
+    if (card.def == 132) {
+        // Shish Kebab (#132): "Reveal: Put this in front of the first player (starting with you) who is Marked. If no one is, put it in front of you."
+        placeShishKebabInFrontOfPlayer(card, hillsPos, wasFaceUp, logOut);
         return;
     }
     if (card.def == 102) {
@@ -2270,6 +2591,33 @@ void Table::pushCardIntoWildsSlot(int slotIdx, CardInst card, std::uint32_t seed
 }
 
 void Table::resolveObjectiveEvent(std::uint32_t seed, std::string& logOut) {
+    if (state_.setupConfig.movie == 2) {
+        if (state_.currentObjective == 1) {
+            logOut += " [Event (Where the Hell is Special Weapons?!?): Moved to Operations!]";
+        } else if (state_.currentObjective == 2) {
+            // Predator 2 Objective 2 Event ("A New Player in Town"):
+            // "Move one of your Found Clues to the Lost pile or draw two Strikes. (If you can't move a Clue, you must draw two Strikes.)"
+            if (countFoundCluesInOperations() > 0 && !state_.pendingSacrificeChoice &&
+                !state_.pendingCoverMeChoice) {
+                state_.pendingPersonalWarEventChoice = true;
+                logOut +=
+                    " [Event (A New Player in Town): Choose whether to move 1 Found Clue to the Lost Clues pile or draw 2 Strikes!]";
+            } else {
+                logOut +=
+                    " [Event (A New Player in Town): 0 Found Clues in Operations -> P" +
+                    std::to_string(state_.activePlayer + 1) + " must draw 2 Strikes!]";
+                drawStrikeAgainstPlayer(state_.activePlayer, seed + 11u, logOut);
+                if (state_.phase != TurnPhase::Defeat &&
+                    state_.players[static_cast<size_t>(state_.activePlayer)].alive) {
+                    drawStrikeAgainstPlayer(state_.activePlayer, seed + 29u, logOut);
+                }
+            }
+        } else {
+            logOut += " [Event (Remarkable Weaponry): Placed beneath Avatar as an Event Mark!]";
+        }
+        return;
+    }
+
     if (state_.currentObjective == 1) {
         // Objective 1 Event: "Better Equipped Every Day" — Move face-up Guerrilla Camp 1 space right
         bool foundCamp = false;
@@ -2443,6 +2791,19 @@ void Table::onCardRevealedInWilds(PileId wildsPileId, int slotIdx, std::uint32_t
             logOut += " Revealed EVENT (Where the Hell is Special Weapons?!?) -> moved to Operations!";
             return;
         }
+        if (state_.setupConfig.movie == 2 && state_.currentObjective == 3) {
+            // Predator 2 Objective 3 Event ("Remarkable Weaponry"):
+            // "Put the Event card beneath your Avatar as a Mark. Pay 6 [Recruit] -> Discard one of your Event Marks."
+            const std::string marksZid = activePlayerZone("marks");
+            Pile& marks = ensureZonePile(marksZid, {140.f, layout_.boardSize.y + 440.f}, "Marks");
+            marks.cards.push_back(ev);
+            queueCardFlight(ev, wildsPos, marks.pos, true, true);
+            syncStateFromZones();
+            logOut += " Revealed EVENT (Remarkable Weaponry) -> placed beneath P" +
+                      std::to_string(state_.activePlayer + 1) + "'s Avatar as an Event Mark (" +
+                      std::to_string(state_.marksCount) + " total Marks)!";
+            return;
+        }
         Pile& disc = ensureZonePile("discard_hazards", {2150.f, 545.f}, "Discarded Hazards/Events");
         disc.cards.push_back(ev);
         queueCardFlight(ev, wildsPos, disc.pos, true, true);
@@ -2454,6 +2815,22 @@ void Table::onCardRevealedInWilds(PileId wildsPileId, int slotIdx, std::uint32_t
     if (isHazardDef(revealed.def)) {
         popWildsTopCard();
         resolveLocationHazard(revealed, seed, logOut);
+        return;
+    }
+
+    // Predator 2 Objective 2 Clues (#129 Forensic Analysis, #130 Physical Evidence, #131 Witness Testimony)
+    // "Reveal: If this is in the Wilds, move it to Operations in a Found pile. Otherwise, move it there in a Lost pile."
+    if (isClueDef(revealed.def)) {
+        popWildsTopCard();
+        placeClueInOperations(revealed, /*found=*/true, wildsPos, true, seed, logOut);
+        return;
+    }
+
+    // Predator 2 Act 2 Enemy: Shish Kebab (#132)
+    // "Reveal: Put this in front of the first player (starting with you) who is Marked. If no one is, put it in front of you."
+    if (revealed.def == 132) {
+        popWildsTopCard();
+        placeShishKebabInFrontOfPlayer(revealed, wildsPos, true, logOut);
         return;
     }
 
@@ -3736,7 +4113,8 @@ bool Table::hasPendingModal() const {
            state_.pendingDiscardToDeckChoice || state_.pendingGainCardChoice ||
            state_.pendingLikeAHunterModal || state_.pendingDiscardKillChoice ||
            state_.pendingDoorSwingsChoice || state_.pendingMoveMarkChoice ||
-           state_.pendingLeadTheAssaultModal || state_.pendingScorpionEnforcerChoice;
+           state_.pendingLeadTheAssaultModal || state_.pendingScorpionEnforcerChoice ||
+           state_.pendingPersonalWarEventChoice || state_.pendingThisIsDreadChoice;
 }
 
 std::string Table::cancelOptionalModal() {
@@ -3748,6 +4126,9 @@ std::string Table::cancelOptionalModal() {
     }
     if (state_.pendingSacrificeChoice || state_.pendingCoverMeChoice) {
         return "Must resolve the incoming Strike prompt.";
+    }
+    if (state_.pendingPersonalWarEventChoice || state_.pendingThisIsDreadChoice) {
+        return "Must resolve the active Event/Enemy prompt.";
     }
 
     state_.pendingSneakPeekChoice = false;
@@ -4816,11 +5197,12 @@ std::string Table::coordinateCard(PileId handPileId, std::uint32_t seed) {
     }
 
     bool worldOfHurtActive = false;
+    int cityOfFearCount = 0;
     for (const auto& p : state_.piles) {
-        if (!p.cards.empty() && p.top().faceUp && p.top().def == 120 &&
+        if (!p.cards.empty() && p.top().faceUp &&
             (p.zone == "combat" || wildsIndexFromZone(p.zone) >= 0)) {
-            worldOfHurtActive = true;
-            break;
+            if (p.top().def == 120) worldOfHurtActive = true;
+            if (p.top().def == 135) ++cityOfFearCount; // City Of Fear: When a player Coordinates a card, they draw a Strike
         }
     }
 
@@ -4861,6 +5243,15 @@ std::string Table::coordinateCard(PileId handPileId, std::uint32_t seed) {
         } else {
             log = "[SOLO 1P COORDINATE] Discarded " + (d.title.empty() ? d.name : d.title) +
                   " (A World of Hurt blocked replacement draw) -> Call For Backup unlocked!";
+        }
+        for (int cf = 0; cf < cityOfFearCount; ++cf) {
+            log += " [City Of Fear Ongoing: P" + std::to_string(ownerP + 1) +
+                   " Coordinated a card -> draws a Strike!]";
+            drawStrikeAgainstPlayer(ownerP, seed + static_cast<std::uint32_t>(cf * 23 + 41), log);
+            if (state_.phase == TurnPhase::Defeat ||
+                !state_.players[static_cast<size_t>(ownerP)].alive) {
+                break;
+            }
         }
         syncStateFromZones();
         state_.lastActionLog = log;
@@ -4909,6 +5300,16 @@ std::string Table::coordinateCard(PileId handPileId, std::uint32_t seed) {
               std::to_string(state_.activePlayer + 1) + "] Lent " +
               (d.title.empty() ? d.name : d.title) +
               " (A World of Hurt blocked replacement draw)!";
+    }
+
+    for (int cf = 0; cf < cityOfFearCount; ++cf) {
+        log += " [City Of Fear Ongoing: P" + std::to_string(ownerP + 1) +
+               " Coordinated a card -> draws a Strike!]";
+        drawStrikeAgainstPlayer(ownerP, seed + static_cast<std::uint32_t>(cf * 23 + 41), log);
+        if (state_.phase == TurnPhase::Defeat ||
+            !state_.players[static_cast<size_t>(ownerP)].alive) {
+            break;
+        }
     }
 
     syncStateFromZones();
@@ -5231,7 +5632,7 @@ std::string Table::leadTheAssault(std::uint32_t seed) {
                 ensureZonePile("discard_hazards", {2150.f, 545.f}, "Discarded Hazards/Events");
             discHaz.cards.push_back(ev);
             queueCardFlight(ev, fromPos, discHaz.pos, true, true);
-            log += "SUCCESS! Discarded Event in Operations (Where the Hell is Special Weapons?!?) instead of completing Objective 1!";
+            log += "SUCCESS (Attack >= Recruit)! Discarded Event in Operations (Where the Hell is Special Weapons?!?) instead of completing Objective 1!";
         } else {
             // Discard Assault The Stronghold (def 124) from Operations and complete Objective 1!
             std::optional<CardInst> atsCard;
@@ -5327,6 +5728,92 @@ std::string Table::resolveScorpionEnforcerChoice(bool discardTopCard) {
         state_.lastActionLog = "Scorpion Enforcer Death: Kept '" + title + "' on top of Deck.";
     }
     return state_.lastActionLog;
+}
+
+std::string Table::resolvePersonalWarEventChoice(bool moveFoundClueToLost, std::uint32_t seed) {
+    if (!state_.pendingPersonalWarEventChoice) {
+        return "No pending Personal Little War Event choice.";
+    }
+    state_.pendingPersonalWarEventChoice = false;
+    std::string log;
+
+    if (moveFoundClueToLost && countFoundCluesInOperations() > 0) {
+        for (size_t i = 0; i < state_.piles.size(); ++i) {
+            Pile& p = state_.piles[i];
+            if (p.zone == "testing" && p.label == "Found Clues" && !p.cards.empty()) {
+                const Vec2 fromPos = p.pos;
+                CardInst c = p.cards.back();
+                p.cards.pop_back();
+                const CardDef& d = catalog_.card(c.def);
+                const std::string title = d.title.empty() ? d.name : d.title;
+                if (p.cards.empty()) {
+                    visuals_.erase(p.id);
+                    state_.piles.erase(state_.piles.begin() + static_cast<std::ptrdiff_t>(i));
+                }
+                c.faceUp = true;
+                c.attached = false;
+                Pile& lost = ensureCluePileInOperations(false);
+                lost.cards.push_back(c);
+                queueCardFlight(c, fromPos, lost.pos, true, true);
+                syncStateFromZones();
+                log = "Event (A New Player in Town): Moved '" + title +
+                      "' from Found Clues to Lost Clues (" +
+                      std::to_string(countFoundCluesInOperations()) + " Found, " +
+                      std::to_string(countLostCluesInOperations()) + " Lost).";
+                state_.lastActionLog = log;
+                recordMove("PERSONAL_WAR_MOVE_CLUE", title, 1, "testing", "testing",
+                           countLostCluesInOperations(), true, log);
+                return log;
+            }
+        }
+    }
+
+    log = "Event (A New Player in Town): P" + std::to_string(state_.activePlayer + 1) +
+          " chose to draw 2 Strikes!";
+    drawStrikeAgainstPlayer(state_.activePlayer, seed + 17u, log);
+    drawStrikeAgainstPlayer(state_.activePlayer, seed + 31u, log);
+    syncStateFromZones();
+    state_.lastActionLog = log;
+    recordMove("PERSONAL_WAR_STRIKES", "A New Player in Town", 2, "strikes",
+               activePlayerZone("strikes"), state_.strikeDamage, true, log);
+    return log;
+}
+
+std::string Table::resolveThisIsDreadChoice(bool payRecruit, std::uint32_t seed) {
+    if (!state_.pendingThisIsDreadChoice) {
+        return "No pending This Is Dread. Truly Dread. choice.";
+    }
+    state_.pendingThisIsDreadChoice = false;
+    std::string log;
+
+    if (payRecruit && state_.recruitPool >= 4) {
+        std::string autoPlayLog;
+        autoPlayHandCardsForRecruit(4, autoPlayLog);
+        state_.recruitPool -= 4;
+        syncStateFromZones();
+        log = "This Is Dread. Truly Dread. Death: Paid 4 * Recruit to avoid drawing 3 Strikes!" +
+              autoPlayLog;
+        state_.lastActionLog = log;
+        recordMove("THIS_IS_DREAD_PAY", "This Is Dread. Truly Dread.", 4,
+                   activePlayerZone("played"), "dead_prey", 0, true, log);
+        return log;
+    }
+
+    log = "This Is Dread. Truly Dread. Death: P" + std::to_string(state_.activePlayer + 1) +
+          " drew 3 Strikes!";
+    for (int i = 0; i < 3; ++i) {
+        drawStrikeAgainstPlayer(state_.activePlayer, seed + static_cast<std::uint32_t>(i * 19 + 5),
+                                log);
+        if (state_.phase == TurnPhase::Defeat ||
+            !state_.players[static_cast<size_t>(state_.activePlayer)].alive) {
+            break;
+        }
+    }
+    syncStateFromZones();
+    state_.lastActionLog = log;
+    recordMove("THIS_IS_DREAD_STRIKES", "This Is Dread. Truly Dread.", 3, "strikes",
+               activePlayerZone("strikes"), state_.strikeDamage, true, log);
+    return log;
 }
 
 std::string Table::fightEnemy(PileId targetPileId, std::uint32_t seed) {
@@ -5463,6 +5950,29 @@ std::string Table::fightEnemy(PileId targetPileId, std::uint32_t seed) {
         state_.lastActionLog =
             "Rulebook p.12: You cannot fight the Final Enemy (One Ugly Mother) until Objective 2 is completed!";
         return state_.lastActionLog;
+    }
+
+    // Personal Little War (#132 Shish Kebab): When in front of a player in Combat Zone, only that player can fight it
+    if (target.def == 132 && inCombat) {
+        const int ownerP = std::clamp(state_.shishKebabTargetPlayer, 0,
+                                      std::max(0, state_.playerCount - 1));
+        if (state_.activePlayer != ownerP) {
+            state_.lastActionLog = "Shish Kebab is in front of Player " +
+                                   std::to_string(ownerP + 1) + " — only Player " +
+                                   std::to_string(ownerP + 1) + " can fight it!";
+            return state_.lastActionLog;
+        }
+    }
+
+    // Personal Little War (#134 Able To Bend Light): "Wilds: You cannot fight this Enemy while Marked."
+    if (target.def == 134 && wIdx >= 0) {
+        syncStateFromZones();
+        if (state_.marksCount > 0) {
+            state_.lastActionLog =
+                "Able To Bend Light cannot be fought in The Wilds while you are Marked (" +
+                std::to_string(state_.marksCount) + " Mark(s))!";
+            return state_.lastActionLog;
+        }
     }
 
     const int reqAtk = effectiveEnemyAttack(*p);
@@ -5784,6 +6294,26 @@ std::string Table::fightEnemy(PileId targetPileId, std::uint32_t seed) {
         }
         break;
     }
+    case 133: { // This Is Dread. Truly Dread.: "Death: Pay 4 * or draw three Strikes."
+        if (state_.recruitPool >= 4 && !state_.pendingSacrificeChoice &&
+            !state_.pendingCoverMeChoice) {
+            state_.pendingThisIsDreadChoice = true;
+            log += " [This Is Dread. Truly Dread. Death: Choose whether to pay 4 * Recruit or draw 3 Strikes!]";
+        } else {
+            log += " [This Is Dread. Truly Dread. Death: Less than 4 * Recruit available -> P" +
+                   std::to_string(state_.activePlayer + 1) + " draws 3 Strikes!]";
+            for (int i = 0; i < 3; ++i) {
+                drawStrikeAgainstPlayer(
+                    state_.activePlayer,
+                    seed + static_cast<std::uint32_t>(i * 19 + 5), log);
+                if (state_.phase == TurnPhase::Defeat ||
+                    !state_.players[static_cast<size_t>(state_.activePlayer)].alive) {
+                    break;
+                }
+            }
+        }
+        break;
+    }
     case 208: // Young Blood: Defensive Adaptations (unless Tech in hand/played, draw 2 fewer cards)
         if (!containsStr(state_.roundHandClasses, "Tech") &&
             !containsStr(state_.playedClasses, "Tech")) {
@@ -5942,6 +6472,28 @@ void Table::eliminatePlayer(int playerIdx, std::string& logOut) {
     } else {
         logOut += " [OPERATIVE KIA: Player " + std::to_string(playerIdx + 1) + " (" + avName +
                   ") has fallen! Remaining operatives fight on!]";
+        if (state_.shishKebabTargetPlayer == playerIdx && state_.playerCount > 1) {
+            for (int step = 1; step < state_.playerCount; ++step) {
+                const int nextP = (playerIdx + step) % state_.playerCount;
+                if (nextP < static_cast<int>(state_.players.size()) &&
+                    state_.players[static_cast<size_t>(nextP)].alive &&
+                    !state_.players[static_cast<size_t>(nextP)].escapedInChoppa) {
+                    state_.shishKebabTargetPlayer = nextP;
+                    bool hasShishKebabInCombat = false;
+                    for (auto& cp : state_.piles) {
+                        if (cp.zone == "combat" && !cp.cards.empty() && cp.top().def == 132) {
+                            cp.label = "IN FRONT OF P" + std::to_string(nextP + 1);
+                            hasShishKebabInCombat = true;
+                        }
+                    }
+                    if (hasShishKebabInCombat) {
+                        logOut += " [Shish Kebab moved in front of Player " +
+                                  std::to_string(nextP + 1) + "!]";
+                    }
+                    break;
+                }
+            }
+        }
     }
 
     // Issue A7 — A Whole New Level Of Pain (def 187): "When you die, kill each other player."
@@ -6206,10 +6758,32 @@ std::string Table::resolveStrikePhase(std::uint32_t seed) {
         }
     }
 
+    // Personal Little War (#132 Shish Kebab): "At the start of that player's Strike Phase, it strikes that player."
+    bool shishKebabStruck = false;
+    const int shishOwner = std::clamp(state_.shishKebabTargetPlayer, 0,
+                                      std::max(0, state_.playerCount - 1));
+    if (ap == shishOwner && ap < static_cast<int>(state_.players.size()) &&
+        state_.players[static_cast<size_t>(ap)].alive) {
+        for (const auto& cp : state_.piles) {
+            if (cp.zone == "combat" && !cp.cards.empty() && cp.top().faceUp &&
+                cp.top().def == 132) {
+                shishKebabStruck = true;
+                log += "[Shish Kebab (in front of P" + std::to_string(ap + 1) +
+                       ") strikes at start of Strike Phase!] ";
+                drawStrikeAgainstPlayer(ap, seed + 5u, log);
+                if (state_.phase == TurnPhase::Defeat ||
+                    !state_.players[static_cast<size_t>(ap)].alive) {
+                    break;
+                }
+            }
+        }
+    }
+
     // Rulebook p.11: From RIGHT to LEFT, each Enemy in the Combat Zone strikes you, one at a time.
     std::vector<Pile*> czEnemies;
     for (auto& p : state_.piles) {
-        if (p.zone == "combat" && !p.cards.empty() && p.top().faceUp && p.top().def != 114) {
+        if (p.zone == "combat" && !p.cards.empty() && p.top().faceUp &&
+            p.top().def != 114 && p.top().def != 132) {
             czEnemies.push_back(&p);
         }
     }
@@ -6217,7 +6791,9 @@ std::string Table::resolveStrikePhase(std::uint32_t seed) {
               [](const Pile* a, const Pile* b) { return a->pos.x > b->pos.x; });
 
     if (czEnemies.empty()) {
-        log += "Combat Zone is clear (0 Strikes).";
+        if (!shishKebabStruck) {
+            log += "Combat Zone is clear (0 Strikes).";
+        }
         if (ap < static_cast<int>(state_.players.size()) &&
             state_.players[static_cast<size_t>(ap)].alive &&
             state_.players[static_cast<size_t>(ap)].strikeDamage >=

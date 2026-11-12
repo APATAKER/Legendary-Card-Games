@@ -2956,7 +2956,19 @@
                       "group":  "mini-mini-deck-predator-2-humans-act-2-personal-little-war",
                       "src":  "05_predator_2_humans/02_act_2_personal_little_war/Act2_ForensicAnalysis.jpg",
                       "land":  false,
-                      "qty":  1
+                      "qty":  1,
+                      "title":  "FORENSIC ANALYSIS",
+                      "subtitle":  "OBJECTIVE 2 - GOAL",
+                      "rarity":  "Goal",
+                      "cost":  -1,
+                      "recruit":  -1,
+                      "attack":  -1,
+                      "classType":  "",
+                      "team":  "",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "Reveal: If this is in the Wilds, move it to Operations in a Found pile. Otherwise, move it there in a Lost pile.\nOperations: If this is the third Clue, each player draws cards equal to the Found Clues. Then discard all Clues and complete the Objective."
                   },
                   {
                       "id":  130,
@@ -2964,7 +2976,19 @@
                       "group":  "mini-mini-deck-predator-2-humans-act-2-personal-little-war",
                       "src":  "05_predator_2_humans/02_act_2_personal_little_war/Act2_PhysicalEvidence.jpg",
                       "land":  false,
-                      "qty":  1
+                      "qty":  1,
+                      "title":  "PHYSICAL EVIDENCE",
+                      "subtitle":  "OBJECTIVE 2 - GOAL",
+                      "rarity":  "Goal",
+                      "cost":  -1,
+                      "recruit":  -1,
+                      "attack":  -1,
+                      "classType":  "",
+                      "team":  "",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "Reveal: If this is in the Wilds, move it to Operations in a Found pile. Otherwise, move it there in a Lost pile.\nOperations: If this is the third Clue, each player draws cards equal to the Found Clues. Then discard all Clues and complete the Objective."
                   },
                   {
                       "id":  131,
@@ -2972,7 +2996,19 @@
                       "group":  "mini-mini-deck-predator-2-humans-act-2-personal-little-war",
                       "src":  "05_predator_2_humans/02_act_2_personal_little_war/Act2_WitnessTestimony.jpg",
                       "land":  false,
-                      "qty":  1
+                      "qty":  1,
+                      "title":  "WITNESS TESTIMONY",
+                      "subtitle":  "OBJECTIVE 2 - GOAL",
+                      "rarity":  "Goal",
+                      "cost":  -1,
+                      "recruit":  -1,
+                      "attack":  -1,
+                      "classType":  "",
+                      "team":  "",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "Reveal: If this is in the Wilds, move it to Operations in a Found pile. Otherwise, move it there in a Lost pile.\nOperations: If this is the third Clue, each player draws cards equal to the Found Clues. Then discard all Clues and complete the Objective."
                   },
                   {
                       "id":  132,
@@ -2980,7 +3016,19 @@
                       "group":  "mini-mini-deck-predator-2-humans-act-2-personal-little-war",
                       "src":  "05_predator_2_humans/02_act_2_personal_little_war/Act2_ShishKebab.jpg",
                       "land":  false,
-                      "qty":  1
+                      "qty":  1,
+                      "title":  "SHISH KEBAB",
+                      "subtitle":  "ENEMY - HUNTER",
+                      "rarity":  "Enemy",
+                      "cost":  -1,
+                      "recruit":  -1,
+                      "attack":  4,
+                      "classType":  "",
+                      "team":  "City Hunter",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "Reveal: Put this in front of the first player (starting with you) who is Marked. If no one is, put it in front of you.\nOngoing: At the start of the Strike Phase on your turn, this Enemy strikes you. Only you can fight it. If you die while this Enemy is in front of you, he moves to the next player."
                   },
                   {
                       "id":  133,
@@ -2988,7 +3036,19 @@
                       "group":  "mini-mini-deck-predator-2-humans-act-2-personal-little-war",
                       "src":  "05_predator_2_humans/02_act_2_personal_little_war/Act2_ThisIsDreadTrulyDread.jpg",
                       "land":  false,
-                      "qty":  1
+                      "qty":  1,
+                      "title":  "THIS IS DREAD. TRULY DREAD.",
+                      "subtitle":  "ENEMY - HUNTER",
+                      "rarity":  "Enemy",
+                      "cost":  -1,
+                      "recruit":  -1,
+                      "attack":  4,
+                      "classType":  "",
+                      "team":  "City Hunter",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "Death: Draw three Strikes unless you pay 4 [Recruit]."
                   },
                   {
                       "id":  134,
@@ -2996,7 +3056,19 @@
                       "group":  "mini-mini-deck-predator-2-humans-act-2-personal-little-war",
                       "src":  "05_predator_2_humans/02_act_2_personal_little_war/Act2_AbleToBendLight.jpg",
                       "land":  false,
-                      "qty":  2
+                      "qty":  2,
+                      "title":  "ABLE TO BEND LIGHT",
+                      "subtitle":  "ENEMY - HUNTER",
+                      "rarity":  "Enemy",
+                      "cost":  -1,
+                      "recruit":  -1,
+                      "attack":  5,
+                      "classType":  "",
+                      "team":  "City Hunter",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "Wilds: This Enemy can\u0027t be fought by Marked players."
                   },
                   {
                       "id":  135,
@@ -3004,7 +3076,19 @@
                       "group":  "mini-mini-deck-predator-2-humans-act-2-personal-little-war",
                       "src":  "05_predator_2_humans/02_act_2_personal_little_war/Act2_CityOfFear.jpg",
                       "land":  false,
-                      "qty":  1
+                      "qty":  1,
+                      "title":  "CITY OF FEAR",
+                      "subtitle":  "ENEMY - HUNTER",
+                      "rarity":  "Enemy",
+                      "cost":  -1,
+                      "recruit":  -1,
+                      "attack":  6,
+                      "classType":  "",
+                      "team":  "City Hunter",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "Ongoing: When a player Coordinates a card, they draw a Strike."
                   },
                   {
                       "id":  136,
@@ -3012,7 +3096,19 @@
                       "group":  "mini-mini-deck-predator-2-humans-act-2-personal-little-war",
                       "src":  "05_predator_2_humans/02_act_2_personal_little_war/Act2_Event.jpg",
                       "land":  false,
-                      "qty":  2
+                      "qty":  2,
+                      "title":  "EVENT",
+                      "subtitle":  "PERSONAL LITTLE WAR - 2",
+                      "rarity":  "Event",
+                      "cost":  -1,
+                      "recruit":  -1,
+                      "attack":  -1,
+                      "classType":  "",
+                      "team":  "",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "When revealed, execute the Event effect on the current Objective, then put this card into Discarded Hazards/Events."
                   },
                   {
                       "id":  137,
@@ -3020,7 +3116,19 @@
                       "group":  "mini-mini-deck-predator-2-humans-act-2-personal-little-war",
                       "src":  "05_predator_2_humans/02_act_2_personal_little_war/Act2_Hazard.jpg",
                       "land":  false,
-                      "qty":  1
+                      "qty":  1,
+                      "title":  "HAZARD!",
+                      "subtitle":  "PERSONAL LITTLE WAR - 2",
+                      "rarity":  "Hazard",
+                      "cost":  -1,
+                      "recruit":  -1,
+                      "attack":  -1,
+                      "classType":  "",
+                      "team":  "",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "When revealed, becomes a Mark on the active player and triggers the next Hazard ability on the Location."
                   },
                   {
                       "id":  138,

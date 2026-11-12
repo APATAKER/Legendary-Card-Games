@@ -12,6 +12,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-11-13
+
+#### Added
+- **Standardized Bug-Fix Workflow Skill** (`.agents/skills/bug-fix-workflow/SKILL.md`): codified the
+  7-stage end-to-end process for triaging, scoping (enriching full sibling card groups/Acts),
+  implementing, regression-testing (`Verify.cpp` + `--verify-mechanics` + `--smoke-test`),
+  resolving `bug_reports.{jsonl,md}`, updating `CHANGELOG.md` (with dated entries), and pausing for
+  user approval before committing.
+- **Predator 2 Act 2 (*Personal Little War*) & Objective 2/3 Event mechanics** (`catalog.json`,
+  `Table.cpp`, `App.cpp`, `Overlay.cpp`, `Verify.cpp`) (`BUG-0006`):
+  - Enriched authentic catalog metadata and rules text for Predator 2 Act 2 cards (`#129`–`#137`:
+    the three Clues, `#132 Shish Kebab`, `#133 This Is Dread. Truly Dread.`,
+    `#134 Able To Bend Light`, `#135 City Of Fear`, `#136 Event`, `#137 Hazard!`).
+  - **Clue pseudo-piles in Operations (`testing`)**: Clues revealed in The Wilds go to the
+    **Found Clues** pile on the left (Blue `0x3b82f6` outline + `FOUND CLUES (X)` badge); Clues
+    entering the Combat Zone go to the **Lost Clues** pile on the right (Red `0xef4444` outline +
+    `LOST CLUES (Y)` badge). When the 3rd Clue enters Operations, each living player draws cards
+    equal to `Found Clues`, all Clues are discarded, and Objective 2 advances to Objective 3.
+  - **Objective 2 Event (*A New Player in Town*)**: draws 2 Strikes immediately when
+    `Found Clues == 0`, otherwise opens `PersonalWarEventModal` (move 1 Found Clue to Lost, or draw
+    2 Strikes).
+  - **Act 2 Enemies**: `#132 Shish Kebab` (player attachment, start-of-Strike-Phase strike,
+    exclusive fight restriction, reassignment on player death), `#133 This Is Dread. Truly Dread.`
+    (Death modal: pay `4 *` Recruit or draw 3 Strikes), `#134 Able To Bend Light` (Marked Wilds
+    fight restriction), `#135 City Of Fear` (Ongoing: Coordinating draws a Strike).
+  - **Objective 3 Event (*Remarkable Weaponry*)**: revealed Event becomes an Event Mark beneath the
+    active player's Avatar, discardable for `6 *` Recruit (HUD button).
+  - Regression tests in `Verify.cpp` (`PART 7`).
+
+#### Changed
+- **Lead the Assault result text** (`Overlay.cpp`, `BUG-0007`): the `LeadAssaultModal` now states the
+  rule explicitly (`Success needs: Total Attack >= Total Recruit`) and notes that an Event in
+  Operations is discarded instead of completing the Objective (*Where the Hell is Special
+  Weapons?!?*), so the outcome is self-explanatory.
+
+#### Fixed
+- **Global UI & modal text wrapping (`BUG-0004`)**: enforced `ImGui::PushTextWrapPos(0.0f)`,
+  `ImGui::TextWrapped` and viewport-clamped window sizes across all ability modals (including
+  `LeadAssaultModal`), the Tactical HUD, Move Log rows, Bug Report previews and Status Bar toasts.
+- **Illegal Free Scan on Coordinate (`BUG-0005`)**: removed the erroneous Free Scan grant from
+  `#67 Knocking on Doors` and `#85 Close Quarters` in `Table::syncStateFromZones()`, and capped the
+  `#65 In the Shadows` Avoid Strike bonus at 1 per turn.
+- **Objective-aware Event dispatch (`BUG-0006`)**: Predator 2 Events now execute the active
+  Objective's Event (*A New Player in Town* in Act 2, *Remarkable Weaponry* in Act 3) instead of
+  falling through to Predator 1's *Right Out From Under Our Noses* ambush.
+- **`BUG-0007` closed as *not a bug* (working as intended)**: `#124 Assault The Stronghold` succeeds
+  when total printed Attack is **at least** total printed Recruit (`2 /// vs 0 *` is a success), and
+  a success discards an Event in Operations instead of completing the Objective. No rule change.
+
+### 2026-11-12
+
+#### Added
+- **In-game Bug Reporter & Diagnostic Snapshot Engine** (`App.h`, `App.cpp`, `Overlay.cpp`,
+  `Table.cpp`, commit `11addd9`): `[B] Report Bug` modal (HUD bar, `B` key, card context menu and
+  Move Log rows) that auto-captures a Tactical State Snapshot, a Board Zones Snapshot and recent
+  Move Log history, persisted to `game/logs/bug_reports.jsonl` and `game/logs/bug_reports.md`.
+- **Predator 2 Barracks Heroes catalog & mechanics** (`catalog.json`, `Table.cpp`, `Overlay.cpp`,
+  `Verify.cpp`, commit `a5b4b19`):
+  - Enriched rules text, costs, Recruit/Attack stats, classes, teams and keywords for all 16
+    Predator 2 Barracks hero printings (`#16`–`#31`: `Danny`, `Harrigan`, `Keyes`, `Lambert`).
+  - Implemented the **Showboat** keyword (`#17`, `#21`, `#29`) and the active, passive and modal
+    abilities across the Predator 2 Barracks cards, with regression tests (`PART 5`).
+- **Predator 2 Act 1 (*War Zone*) catalog & mechanics** (`catalog.json`, `Table.cpp`,
+  `Overlay.cpp`, `Verify.cpp`, commit `e9ae680`):
+  - Enriched metadata for Act 1 cards (`#124`–`#128`) and Objective 1 (`#99 War Zone`).
+  - `#124 Assault The Stronghold` moves to Operations on reveal and unlocks the once-per-turn
+    **Lead the Assault** action and result modal (`BUG-0002`).
+  - `#125 Scorpion Enforcer` Death trigger (reveal top card, optionally discard) and
+    `#126 El Scorpio` Ongoing Strike, plus the Objective 1 Event (*Where the Hell is Special
+    Weapons?!?*), with regression tests (`PART 6`).
+
+#### Fixed
+- **Predator 2 HQ 0-cost recruitment (`BUG-0001`, `BUG-0003`)**: populated authentic Recruit costs
+  and printed stats for Predator 2 Barracks heroes so HQ recruiting deducts Recruit points.
+- **Predator 2 Objective 1 Goal reveal & action (`BUG-0002`)**: `#124 Assault The Stronghold` moves
+  to Operations when revealed and enables Lead the Assault.
+
 ## [0.2.0] - 2026-11-05
 
 ### Added

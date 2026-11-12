@@ -170,6 +170,37 @@ void App::renderWorldLabels() {
         }
     }
 
+    // Personal Little War (Predator 2 Objective 2): Side-by-side FOUND CLUES (Blue) & LOST CLUES (Red) header badges in Operations
+    if (z > 0.18f &&
+        ((st.setupConfig.movie == 2 && st.currentObjective == 2) ||
+         table_->countFoundCluesInOperations() > 0 ||
+         table_->countLostCluesInOperations() > 0)) {
+        const int foundCnt = table_->countFoundCluesInOperations();
+        const int lostCnt = table_->countLostCluesInOperations();
+
+        char foundBadge[48];
+        std::snprintf(foundBadge, sizeof foundBadge, "FOUND CLUES (%d)", foundCnt);
+        const Vec2 fSp = camera_.worldToScreen({1214.f, 408.f});
+        const ImVec2 fSz = ImGui::CalcTextSize(foundBadge);
+        const ImVec2 fMin(fSp.x - fSz.x * 0.5f - 7.f, fSp.y - fSz.y * 0.5f - 3.f);
+        const ImVec2 fMax(fSp.x + fSz.x * 0.5f + 7.f, fSp.y + fSz.y * 0.5f + 3.f);
+        dl->AddRectFilled(fMin, fMax, IM_COL32(15, 35, 75, 240), 5.f);
+        dl->AddRect(fMin, fMax, IM_COL32(59, 130, 246, 255), 5.f, 0, 1.8f);
+        dl->AddText(ImVec2(fSp.x - fSz.x * 0.5f, fSp.y - fSz.y * 0.5f),
+                    IM_COL32(219, 234, 254, 255), foundBadge);
+
+        char lostBadge[48];
+        std::snprintf(lostBadge, sizeof lostBadge, "LOST CLUES (%d)", lostCnt);
+        const Vec2 lSp = camera_.worldToScreen({1405.f, 408.f});
+        const ImVec2 lSz = ImGui::CalcTextSize(lostBadge);
+        const ImVec2 lMin(lSp.x - lSz.x * 0.5f - 7.f, lSp.y - lSz.y * 0.5f - 3.f);
+        const ImVec2 lMax(lSp.x + lSz.x * 0.5f + 7.f, lSp.y + lSz.y * 0.5f + 3.f);
+        dl->AddRectFilled(lMin, lMax, IM_COL32(65, 15, 22, 240), 5.f);
+        dl->AddRect(lMin, lMax, IM_COL32(239, 68, 68, 255), 5.f, 0, 1.8f);
+        dl->AddText(ImVec2(lSp.x - lSz.x * 0.5f, lSp.y - lSz.y * 0.5f),
+                    IM_COL32(254, 226, 226, 255), lostBadge);
+    }
+
     if (z < 0.16f) return;
 
     for (const auto& p : st.piles) {
@@ -464,6 +495,7 @@ void App::renderTacticalHUD() {
                              ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse;
 
     if (ImGui::Begin("Tactical Game State (Unlocked & Synced)###TacticalHUD", nullptr, flags)) {
+        ImGui::PushTextWrapPos(0.0f);
         TableState& st = table_->mutableState();
         const int actP = std::clamp(st.activePlayer, 0, std::max(0, st.playerCount - 1));
 
@@ -652,6 +684,17 @@ void App::renderTacticalHUD() {
                                st.freeScansAvailable);
         }
 
+        // Personal Little War (Predator 2 Objective 2) Clue Tracker
+        if ((st.setupConfig.movie == 2 && st.currentObjective == 2) ||
+            table_->countFoundCluesInOperations() > 0 ||
+            table_->countLostCluesInOperations() > 0) {
+            const int foundC = table_->countFoundCluesInOperations();
+            const int lostC = table_->countLostCluesInOperations();
+            ImGui::TextColored(ImVec4(0.42f, 0.72f, 0.98f, 1.f),
+                               "Clues in Operations: %d Found | %d Lost  (%d/3)", foundC, lostC,
+                               foundC + lostC);
+        }
+
         // Active Player Zone Card Counts Summary
         const std::string handZid = table_->activePlayerZone("hand");
         const std::string playedZid = table_->activePlayerZone("played");
@@ -769,10 +812,19 @@ void App::renderTacticalHUD() {
             if (ImGui::Button("Play All Hand Cards [A]", ImVec2(-1.f, 0.f))) {
                 showToast(table_->playAllHandCards(rng_()));
             }
-            if (st.currentObjective == 2) {
+            if (st.setupConfig.movie == 1 && st.currentObjective == 2) {
                 ImGui::BeginDisabled(!table_->canCompleteObjective2());
                 if (ImGui::Button("Complete Objective 2 (Spend 6 *)", ImVec2(-1.f, 0.f))) {
                     showToast(table_->completeObjective2());
+                }
+                ImGui::EndDisabled();
+            }
+            if ((st.setupConfig.movie == 2 && st.currentObjective == 3) ||
+                table_->canDiscardEventMark()) {
+                ImGui::BeginDisabled(!table_->canDiscardEventMark());
+                if (ImGui::Button("Discard Event Mark (Spend 6 *)", ImVec2(-1.f, 0.f))) {
+                    table_->checkpoint();
+                    showToast(table_->discardEventMark());
                 }
                 ImGui::EndDisabled();
             }
@@ -820,6 +872,7 @@ void App::renderTacticalHUD() {
             ImGui::Separator();
             ImGui::TextWrapped("%s", st.lastActionLog.c_str());
         }
+        ImGui::PopTextWrapPos();
     }
     ImGui::End();
 }
@@ -830,6 +883,7 @@ void App::renderMoveLogWindow() {
     const ImVec2 vp = ImGui::GetMainViewport()->Size;
     ImGui::SetNextWindowPos(ImVec2(14.f, vp.y - 52.f), ImGuiCond_FirstUseEver, ImVec2(0.f, 1.f));
     ImGui::SetNextWindowSize(ImVec2(680.f, 230.f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(480.f, 160.f), ImVec2(vp.x - 28.f, vp.y - 80.f));
 
     if (ImGui::Begin("Card Movement & Telemetry Log [L]###MoveLogWin", &showMoveLog_,
                      ImGuiWindowFlags_NoSavedSettings)) {
@@ -860,6 +914,7 @@ void App::renderMoveLogWindow() {
 
         ImGui::Separator();
         ImGui::BeginChild("MoveLogScroll");
+        ImGui::PushTextWrapPos(0.0f);
         for (int i = static_cast<int>(logVec.size()) - 1; i >= 0; --i) {
             const MoveLogEntry& e = logVec[static_cast<size_t>(i)];
             if (!containsCaseInsensitive(e.cardSummary, moveLogFilter_) &&
@@ -901,6 +956,7 @@ void App::renderMoveLogWindow() {
                                 e.faceUp ? "FaceUp" : "FaceDown", e.stateDelta.c_str());
             ImGui::PopID();
         }
+        ImGui::PopTextWrapPos();
         ImGui::EndChild();
     }
     ImGui::End();
@@ -1917,9 +1973,10 @@ void App::renderAbilityModals() {
     if (st.pendingLeadTheAssaultModal) {
         ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always,
                                 ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSize(ImVec2(760.f, 0.f), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(std::min(760.f, vp.x - 40.f), 0.f), ImGuiCond_Always);
         if (ImGui::Begin("LEAD THE ASSAULT — DECK FLIP RESULTS###LeadAssaultModal", nullptr,
                          flags)) {
+            ImGui::PushTextWrapPos(0.0f);
             ImGui::TextColored(
                 ImVec4(0.95f, 0.85f, 0.35f, 1.f),
                 "Each player flipped the top card of their deck into their discard pile:");
@@ -1939,15 +1996,22 @@ void App::renderAbilityModals() {
             ImGui::Separator();
             ImGui::Text("Total Printed Attack: %d ///   vs   Total Printed Recruit: %d *",
                         st.leadTheAssaultTotalAttack, st.leadTheAssaultTotalRecruit);
+            ImGui::TextColored(ImVec4(0.72f, 0.74f, 0.80f, 1.f),
+                               "Success needs: Total Attack >= Total Recruit (\"at least as much\"). "
+                               "On success, an Event in Operations is discarded instead of "
+                               "completing the Objective (Where the Hell is Special Weapons?!?).");
             ImGui::Spacing();
             const ImVec4 resColor = st.leadTheAssaultSucceeded
                                         ? ImVec4(0.35f, 0.96f, 0.52f, 1.f)
                                         : ImVec4(0.98f, 0.38f, 0.38f, 1.f);
-            ImGui::TextColored(resColor, "%s", st.leadTheAssaultSummary.c_str());
+            ImGui::PushStyleColor(ImGuiCol_Text, resColor);
+            ImGui::TextWrapped("%s", st.leadTheAssaultSummary.c_str());
+            ImGui::PopStyleColor();
             ImGui::Spacing();
             if (ImGui::Button("Acknowledge & Continue", ImVec2(-1.f, 36.f))) {
                 table_->dismissLeadTheAssaultModal();
             }
+            ImGui::PopTextWrapPos();
         }
         ImGui::End();
     }
@@ -1956,9 +2020,10 @@ void App::renderAbilityModals() {
     if (st.pendingScorpionEnforcerChoice) {
         ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always,
                                 ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSize(ImVec2(720.f, 0.f), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(std::min(720.f, vp.x - 40.f), 0.f), ImGuiCond_Always);
         if (ImGui::Begin("SCORPION ENFORCER DEATH — TOP CARD OF DECK###ScorpionEnforcerModal",
                          nullptr, flags)) {
+            ImGui::PushTextWrapPos(0.0f);
             const CardDef& rdef = catalog_.card(st.scorpionEnforcerRevealedCard.def);
             ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.32f, 1.f),
                                "Scorpion Enforcer Death Trigger — Top card of P%d's Deck revealed:",
@@ -1979,6 +2044,81 @@ void App::renderAbilityModals() {
                 table_->checkpoint();
                 showToast(table_->resolveScorpionEnforcerChoice(false));
             }
+            ImGui::PopTextWrapPos();
+        }
+        ImGui::End();
+    }
+
+    // 14. PERSONAL LITTLE WAR EVENT (A New Player in Town): Move a Found Clue to Lost Clues or draw 2 Strikes
+    if (st.pendingPersonalWarEventChoice) {
+        ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(std::min(720.f, vp.x - 40.f), 0.f), ImGuiCond_Always);
+        if (ImGui::Begin("EVENT: A NEW PLAYER IN TOWN (PERSONAL LITTLE WAR)###PersonalWarEventModal",
+                         nullptr, flags)) {
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextColored(ImVec4(0.98f, 0.78f, 0.28f, 1.f),
+                               "Objective 2 Event (A New Player in Town): \"Event: Move a Found Clue "
+                               "to the Lost Clue pile, or draw two Strikes.\"");
+            ImGui::Separator();
+            const int foundC = table_->countFoundCluesInOperations();
+            const int lostC = table_->countLostCluesInOperations();
+            ImGui::TextColored(ImVec4(0.42f, 0.72f, 0.98f, 1.f),
+                               "Current Clues in Operations: %d Found Clue(s)  |  %d Lost Clue(s)",
+                               foundC, lostC);
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.36f, 0.58f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.46f, 0.72f, 1.f));
+            if (ImGui::Button("Move 1 Found Clue to Lost Clues Pile", ImVec2(-1.f, 36.f))) {
+                table_->checkpoint();
+                showToast(table_->resolvePersonalWarEventChoice(true, rng_()));
+            }
+            ImGui::PopStyleColor(2);
+
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.52f, 0.16f, 0.18f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.68f, 0.22f, 0.24f, 1.f));
+            if (ImGui::Button("Keep Found Clues — Draw 2 Strikes Instead", ImVec2(-1.f, 36.f))) {
+                table_->checkpoint();
+                showToast(table_->resolvePersonalWarEventChoice(false, rng_()));
+            }
+            ImGui::PopStyleColor(2);
+            ImGui::PopTextWrapPos();
+        }
+        ImGui::End();
+    }
+
+    // 15. THIS IS DREAD. TRULY DREAD. (id 133): Death — Pay 4 * or draw 3 Strikes
+    if (st.pendingThisIsDreadChoice) {
+        ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(std::min(720.f, vp.x - 40.f), 0.f), ImGuiCond_Always);
+        if (ImGui::Begin("THIS IS DREAD. TRULY DREAD. — DEATH TRIGGER###ThisIsDreadModal", nullptr,
+                         flags)) {
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextColored(ImVec4(0.98f, 0.78f, 0.28f, 1.f),
+                               "This Is Dread. Truly Dread. Death: \"Pay 4 * or draw three Strikes.\"");
+            ImGui::Separator();
+            ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.62f, 1.f),
+                               "Available Recruit Pool: %d *", st.recruitPool);
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.48f, 0.28f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.58f, 0.34f, 1.f));
+            if (ImGui::Button("Pay 4 * Recruit (Avoid Drawing 3 Strikes)", ImVec2(-1.f, 36.f))) {
+                table_->checkpoint();
+                showToast(table_->resolveThisIsDreadChoice(true, rng_()));
+            }
+            ImGui::PopStyleColor(2);
+
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.52f, 0.16f, 0.18f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.68f, 0.22f, 0.24f, 1.f));
+            if (ImGui::Button("Keep Recruit — Draw 3 Strikes Instead", ImVec2(-1.f, 36.f))) {
+                table_->checkpoint();
+                showToast(table_->resolveThisIsDreadChoice(false, rng_()));
+            }
+            ImGui::PopStyleColor(2);
+            ImGui::PopTextWrapPos();
         }
         ImGui::End();
     }
@@ -2759,14 +2899,16 @@ void App::renderBugReportModal() {
             const float halfW = (ImGui::GetContentRegionAvail().x - 10.f) * 0.5f;
 
             ImGui::BeginChild("BugStatePreview", ImVec2(halfW, std::max(120.f, previewH)), true);
+            ImGui::PushTextWrapPos(0.0f);
             ImGui::TextColored(ImVec4(0.45f, 0.92f, 0.65f, 1.f),
                                "Tactical & Board Zones Snapshot:");
             ImGui::Separator();
             const std::string tacSnap = table_->buildTacticalSnapshot();
             const std::string brdSnap = table_->buildBoardSnapshot();
-            ImGui::TextUnformatted(tacSnap.c_str());
+            ImGui::TextWrapped("%s", tacSnap.c_str());
             ImGui::Separator();
-            ImGui::TextUnformatted(brdSnap.c_str());
+            ImGui::TextWrapped("%s", brdSnap.c_str());
+            ImGui::PopTextWrapPos();
             ImGui::EndChild();
 
             ImGui::SameLine(0.f, 10.f);
@@ -2884,6 +3026,7 @@ void App::renderBugReportModal() {
 
             // Right Pane: Selected Bug Report Details
             ImGui::BeginChild("BugReportDetailPane", ImVec2(0.f, availH), true);
+            ImGui::PushTextWrapPos(0.0f);
             const BugReportEntry* sel = nullptr;
             for (const auto& r : reports) {
                 if (r.id == selectedBugReportId_) {
@@ -2929,6 +3072,7 @@ void App::renderBugReportModal() {
                         table_->bugReports().empty() ? -1 : table_->bugReports().back().id;
                     showToast("Deleted " + delCode);
                     ImGui::PopStyleColor(2);
+                    ImGui::PopTextWrapPos();
                     ImGui::EndChild();
                     ImGui::End();
                     return;
@@ -2961,6 +3105,7 @@ void App::renderBugReportModal() {
                                    "Captured Recent Moves (%zu events leading up to bug):",
                                    sel->recentMoves.size());
                 ImGui::BeginChild("SavedBugMovesBox", ImVec2(0.f, 145.f), true);
+                ImGui::PushTextWrapPos(0.0f);
                 if (sel->recentMoves.empty()) {
                     ImGui::TextDisabled("(No moves recorded)");
                 } else {
@@ -2968,17 +3113,21 @@ void App::renderBugReportModal() {
                         ImGui::TextWrapped("%s", sel->recentMoves[static_cast<size_t>(i)].c_str());
                     }
                 }
+                ImGui::PopTextWrapPos();
                 ImGui::EndChild();
 
                 ImGui::Spacing();
                 ImGui::TextColored(ImVec4(0.45f, 0.92f, 0.65f, 1.f),
                                    "Captured Tactical & Board Zones Snapshot:");
                 ImGui::BeginChild("SavedBugSnapshotBox", ImVec2(0.f, 0.f), true);
-                ImGui::TextUnformatted(sel->tacticalSnapshot.c_str());
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextWrapped("%s", sel->tacticalSnapshot.c_str());
                 ImGui::Separator();
-                ImGui::TextUnformatted(sel->boardSnapshot.c_str());
+                ImGui::TextWrapped("%s", sel->boardSnapshot.c_str());
+                ImGui::PopTextWrapPos();
                 ImGui::EndChild();
             }
+            ImGui::PopTextWrapPos();
             ImGui::EndChild();
         }
     }
@@ -2987,11 +3136,13 @@ void App::renderBugReportModal() {
 
 void App::renderStatusBar() {
     const ImVec2 vp = ImGui::GetMainViewport()->Size;
-    ImGui::SetNextWindowPos(ImVec2(14.f, vp.y - 44.f), ImGuiCond_Always);
+    ImGui::SetNextWindowPos(ImVec2(14.f, vp.y - 12.f), ImGuiCond_Always, ImVec2(0.f, 1.f));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0.f, 0.f), ImVec2(vp.x - 28.f, 110.f));
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove |
                              ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
     if (ImGui::Begin("##StatusBar", nullptr, flags)) {
+        ImGui::PushTextWrapPos(vp.x - 48.f);
         const PileId activeId = (draggedPile_ != kNoPile) ? draggedPile_ : hoveredPile_;
         if (const Pile* p = table_->find(activeId); p && !p->cards.empty()) {
             const CardInst& top = p->top();
@@ -3016,9 +3167,9 @@ void App::renderStatusBar() {
         }
 
         if (toastTimer_ > 0.f && !toastText_.empty()) {
-            ImGui::SameLine(0.f, 24.f);
             ImGui::TextColored(ImVec4(0.98f, 0.85f, 0.35f, 1.f), ">> %s", toastText_.c_str());
         }
+        ImGui::PopTextWrapPos();
     }
     ImGui::End();
 }

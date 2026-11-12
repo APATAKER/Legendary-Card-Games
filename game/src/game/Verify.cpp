@@ -1434,6 +1434,9 @@ int runMechanicsVerification(const std::filesystem::path& reportPath) {
         check(t.state().leadTheAssaultSucceeded && t.countEventsInOperations() == 0 &&
                   t.hasAssaultTheStrongholdInOperations() && t.state().currentObjective == 1,
               "Objective 1 War Zone (Event in Operations): Successful Lead the Assault discards the Event in Operations instead of completing Objective 1");
+        check(t.state().leadTheAssaultTotalAttack > t.state().leadTheAssaultTotalRecruit &&
+                  t.state().leadTheAssaultSummary.find("Attack >= Recruit") != std::string::npos,
+              "BUG-0007 (Working as intended): Attack strictly greater than Recruit still succeeds ('at least as much'), and the summary states the Attack >= Recruit rule");
         t.dismissLeadTheAssaultModal();
 
         // Attempt 3 (Next turn, no Event in Operations): Put #224 Brute Strength (0 *, 1 ///) on top of P1's deck -> Completes Objective 1!
@@ -1471,6 +1474,249 @@ int runMechanicsVerification(const std::filesystem::path& reportPath) {
         t.resolveScorpionEnforcerChoice(true);
         check(!t.state().pendingScorpionEnforcerChoice,
               "#125 Scorpion Enforcer Death: Resolving choice discards the revealed top card to discard pile");
+    }
+
+    // =========================================================================
+    // PART 7: REPORTED BUG REGRESSION SUITE (BUG-0005 & BUG-0006 — PREDATOR 2 ACT 2)
+    // =========================================================================
+    out << "\n=== PART 7: REPORTED BUG REGRESSION SUITE (BUG-0005 & BUG-0006) ===\n";
+    {
+        // 7A. BUG-0005: #67 Knocking on Doors (Detective Role Card) must NOT grant a Free Scan when Coordinated
+        BoardLayout lay2 = baseLayout;
+        configurePlayerZones(lay2, 2);
+        GameSetupConfig cfg2;
+        cfg2.movie = 2;
+        cfg2.playAsPredators = false;
+        cfg2.playerCount = 2;
+        cfg2.playerAvatars = {66, 80}; // P1 = Detective (66, Role 67), P2 = SWAT Officer (80, Role 81)
+        cfg2.avatarDefId = 66;
+
+        Table t(catalog, lay2);
+        t.reset(buildGameSetup(catalog, lay2, 3000u, cfg2));
+        clearWildsAndCombat(t);
+        auto& piles = t.mutableState().piles;
+        piles.erase(std::remove_if(piles.begin(), piles.end(),
+                                   [](const Pile& p) {
+                                       return p.zone == "p0_hand" || p.zone == "p1_hand" ||
+                                              p.zone == "p0_played" || p.zone == "p1_played";
+                                   }),
+                    piles.end());
+        t.mutableState().accountedCardRecruit.clear();
+        t.mutableState().accountedCardAttack.clear();
+        t.mutableState().accountedPlayedUids.clear();
+        t.mutableState().recruitPool = 0;
+        t.mutableState().attackPool = 0;
+        t.mutableState().phase = TurnPhase::ActionPhase;
+        t.mutableState().activePlayer = 0; // P1's (Detective's) turn
+
+        // Place #67 Knocking on Doors (Detective Role: 2 /// Attack, Call For Backup: Draw 1 card) in P1's hand (p0_hand)
+        // and #20 The Speech (Harrigan 2 Common: 1 /// Attack, Coordinate) in P2's hand (p1_hand)
+        placeSingleInZone(t, 67, "p0_hand", true, false);
+        const PileId p2SpeechPid = placeSingleInZone(t, 20, "p1_hand", true, false);
+        t.reflowZone("p0_hand");
+        t.reflowZone("p1_hand");
+        t.syncStateFromZones();
+        t.coordinateCard(p2SpeechPid, 3001u);
+
+        check(t.state().freeScansAvailable == 0 && t.state().attackPool == 3,
+              "BUG-0005 (#67 Knocking on Doors + Coordinate): Grants 3 /// Attack (2 /// from #67 + 1 /// from #20) and 0 Free Scans (does NOT falsely grant a Free Scan)");
+
+        // Add another Intel card (#22 The Door Swings Both Ways, 2 ///) to P1's hand -> still 0 Free Scans!
+        placeSingleInZone(t, 22, "p0_hand", true, false);
+        t.syncStateFromZones();
+        check(t.state().freeScansAvailable == 0 && t.state().attackPool == 5,
+              "BUG-0005 (#67 Knocking on Doors with 2nd Intel Card): Grants 0 Free Scans");
+
+        // 7B. BUG-0006 Catalog Enrichment (#129-#137 Personal Little War - 2)
+        bool allAct2Enriched = true;
+        for (int cid = 129; cid <= 137; ++cid) {
+            const CardDef& cd = catalog.card(cid);
+            if (cd.title.empty() || cd.subtitle.empty() || cd.rulesText.empty()) {
+                allAct2Enriched = false;
+                break;
+            }
+        }
+        check(allAct2Enriched && catalog.card(129).attack == -1 &&
+                  catalog.card(130).attack == -1 && catalog.card(131).attack == -1 &&
+                  catalog.card(132).attack == 4 && catalog.card(133).attack == 4 &&
+                  catalog.card(134).attack == 5 && catalog.card(135).attack == 6 &&
+                  catalog.card(136).attack == -1 && catalog.card(137).attack == -1,
+              "BUG-0006 (Catalog #129-#137): All 9 Personal Little War (Act 2) cards have authentic titles, subtitles, rulesText, and stats");
+
+        // 7C. BUG-0006 Clue Mechanics: Found Clues (Wilds Reveal) vs. Lost Clues (Combat Zone) & 3rd Clue Resolution
+        t.reset(buildGameSetup(catalog, lay2, 3010u, cfg2));
+        clearWildsAndCombat(t);
+        t.mutableState().setupConfig.movie = 2;
+        t.mutableState().currentObjective = 2;
+        t.mutableState().phase = TurnPhase::ActionPhase;
+        t.mutableState().attackPool = 20;
+
+        // Clue 1 (#129 A Trail of Bodies): Scan in Wilds (wilds_0) -> Found Clues pile in Operations
+        const PileId clue1Pid = placeSingleInZone(t, 129, "wilds_0", false, false);
+        t.scanWilds(clue1Pid, 3011u);
+        check(t.countFoundCluesInOperations() == 1 && t.countLostCluesInOperations() == 0 &&
+                  t.state().currentObjective == 2,
+              "BUG-0006 (Clue 1 Revealed in Wilds): #129 A Trail of Bodies moved to Found Clues pile in Operations (1 Found, 0 Lost)");
+
+        // Clue 2 (#130 Unusual Trophy): Push from Hills (wilds_0) into Combat Zone during Enemy Phase -> Lost Clues pile in Operations
+        placeSingleInZone(t, 130, "wilds_0", false, false);
+        placeSingleInZone(t, 125, "wilds_1", false, false);
+        placeSingleInZone(t, 125, "wilds_2", false, false);
+        placeSingleInZone(t, 125, "wilds_3", false, false);
+        placeSingleInZone(t, 125, "wilds_4", false, false);
+        t.mutableState().phase = TurnPhase::EnemyPhase;
+        t.resolveEnemyPhase(3012u);
+        check(t.countFoundCluesInOperations() == 1 && t.countLostCluesInOperations() == 1 &&
+                  t.state().currentObjective == 2,
+              "BUG-0006 (Clue 2 Pushed to Combat Zone): #130 Unusual Trophy moved to Lost Clues pile in Operations (1 Found, 1 Lost)");
+
+        // Clue 3 (#131 Advanced Weaponry): Scan in Wilds (wilds_0) -> 2 Found Clues, 1 Lost Clue (3 total)
+        // -> Each player draws 2 cards (equal to Found Clues), all 3 Clues discarded to discard_hazards, Objective 2 completes -> Objective 3!
+        clearWildsAndCombat(t);
+        int p0HandBefore3rd = 0, p1HandBefore3rd = 0;
+        for (const auto& p : t.state().piles) {
+            if (p.zone == "p0_hand") p0HandBefore3rd += static_cast<int>(p.cards.size());
+            if (p.zone == "p1_hand") p1HandBefore3rd += static_cast<int>(p.cards.size());
+        }
+        t.mutableState().phase = TurnPhase::ActionPhase;
+        t.mutableState().attackPool = 10;
+        const PileId clue3Pid = placeSingleInZone(t, 131, "wilds_0", false, false);
+        t.scanWilds(clue3Pid, 3013u);
+
+        int p0HandAfter3rd = 0, p1HandAfter3rd = 0;
+        for (const auto& p : t.state().piles) {
+            if (p.zone == "p0_hand") p0HandAfter3rd += static_cast<int>(p.cards.size());
+            if (p.zone == "p1_hand") p1HandAfter3rd += static_cast<int>(p.cards.size());
+        }
+        check(t.countFoundCluesInOperations() == 0 && t.countLostCluesInOperations() == 0 &&
+                  t.state().currentObjective == 3 && p0HandAfter3rd == p0HandBefore3rd + 2 &&
+                  p1HandAfter3rd == p1HandBefore3rd + 2,
+              "BUG-0006 (3rd Clue Placed in Operations): Each player drew 2 cards (for 2 Found Clues), discarded all 3 Clues, and advanced to Objective 3");
+
+        // 7D. BUG-0006 Personal Little War Event (#136 A New Player in Town): Choice Modal when Found Clues >= 1
+        t.reset(buildGameSetup(catalog, lay2, 3020u, cfg2));
+        clearWildsAndCombat(t);
+        t.mutableState().setupConfig.movie = 2;
+        t.mutableState().currentObjective = 2;
+        t.mutableState().phase = TurnPhase::ActionPhase;
+        t.mutableState().attackPool = 10;
+
+        // First put 1 Found Clue (#129) into Operations by scanning it in wilds_0
+        const PileId c1Pid = placeSingleInZone(t, 129, "wilds_0", false, false);
+        t.scanWilds(c1Pid, 3021u);
+        check(t.countFoundCluesInOperations() == 1, "Setup 1 Found Clue in Operations for Event test");
+
+        // Scan Event #136 (A New Player in Town) in wilds_1 -> opens pendingPersonalWarEventChoice modal
+        const PileId ev136Pid = placeSingleInZone(t, 136, "wilds_1", false, false);
+        t.scanWilds(ev136Pid, 3022u);
+        check(t.state().pendingPersonalWarEventChoice,
+              "BUG-0006 (A New Player in Town Event with Found Clue): Opens interactive choice modal");
+        t.resolvePersonalWarEventChoice(true, 3023u);
+        check(!t.state().pendingPersonalWarEventChoice &&
+                  t.countFoundCluesInOperations() == 0 && t.countLostCluesInOperations() == 1,
+              "BUG-0006 (A New Player in Town Choice): Choosing 'Move Found Clue to Lost' moved #129 from Found Clues to Lost Clues without drawing Strikes");
+
+        // 7E. BUG-0006 Act 2 Enemy Abilities (#132 Shish Kebab, #133 This Is Dread, #134 Able To Bend Light, #135 City Of Fear)
+        clearWildsAndCombat(t);
+        t.mutableState().activePlayer = 0;
+        t.mutableState().phase = TurnPhase::ActionPhase;
+        t.mutableState().attackPool = 20;
+        t.mutableState().recruitPool = 6;
+
+        // #134 Able To Bend Light: Cannot be fought in Wilds while Marked
+        const PileId bendPid = placeSingleInZone(t, 134, "wilds_0", true, false);
+        t.mutableState().players[0].manualMarksOffset = 1;
+        t.syncStateFromZones();
+        t.fightEnemy(bendPid, 3024u);
+        check(t.findZonePile("wilds_0") != nullptr,
+              "BUG-0006 (#134 Able To Bend Light): Blocked fighting in The Wilds while active player is Marked");
+        t.mutableState().players[0].manualMarksOffset = 0;
+        t.syncStateFromZones();
+        t.fightEnemy(bendPid, 3025u);
+        check(t.findZonePile("wilds_0") == nullptr,
+              "BUG-0006 (#134 Able To Bend Light): Defeated in The Wilds once unmarked");
+
+        // #133 This Is Dread. Truly Dread.: Death prompts to pay 4 * Recruit or draw 3 Strikes
+        const PileId dreadPid = placeSingleInZone(t, 133, "wilds_1", true, false);
+        t.fightEnemy(dreadPid, 3026u);
+        check(t.state().pendingThisIsDreadChoice,
+              "BUG-0006 (#133 This Is Dread. Truly Dread. Death): Opens choice modal when >= 4 * Recruit is available");
+        const int recBeforeDread = t.state().recruitPool;
+        t.resolveThisIsDreadChoice(true, 3027u);
+        check(!t.state().pendingThisIsDreadChoice && t.state().recruitPool == recBeforeDread - 4,
+              "BUG-0006 (#133 This Is Dread. Truly Dread. Choice): Paid 4 * Recruit to avoid drawing 3 Strikes");
+
+        // #135 City Of Fear: Combat Zone Ongoing deals a Strike to any player who Coordinates a card
+        placeSingleInZone(t, 135, "combat", true, false);
+        if (Pile* sDeck = t.findZonePile("strikes")) {
+            sDeck->cards.push_back(CardInst{t.mutableState().nextUid++, 188, false, false}); // 2 dmg
+        }
+        const PileId p2CoordPid = placeSingleInZone(t, 20, "p1_hand", true, false); // The Speech (has Coordinate)
+        t.reflowZone("p1_hand");
+        t.coordinateCard(p2CoordPid, 3028u);
+        check(t.state().players[1].strikeDamage == 2,
+              "BUG-0006 (#135 City Of Fear Ongoing): Coordinating a card while City Of Fear is in Combat Zone struck the coordinating player");
+
+        // #132 Shish Kebab: Placed in front of P1 (activePlayer 0); P2 cannot fight it; if P1 dies, moves in front of P2
+        clearWildsAndCombat(t);
+        placeSingleInZone(t, 132, "wilds_0", true, false);
+        placeSingleInZone(t, 125, "wilds_1", false, false);
+        placeSingleInZone(t, 125, "wilds_2", false, false);
+        placeSingleInZone(t, 125, "wilds_3", false, false);
+        placeSingleInZone(t, 125, "wilds_4", false, false);
+        t.mutableState().phase = TurnPhase::EnemyPhase;
+        t.resolveEnemyPhase(3029u); // Pushes #132 from wilds_0 into Combat Zone in front of P1!
+
+        PileId shishCombatPid = kNoPile;
+        for (const auto& cp : t.state().piles) {
+            if (cp.zone == "combat" && !cp.cards.empty() && cp.top().def == 132) {
+                shishCombatPid = cp.id;
+                break;
+            }
+        }
+        check(shishCombatPid != kNoPile && t.state().shishKebabTargetPlayer == 0,
+              "BUG-0006 (#132 Shish Kebab Combat Zone): Placed in front of active player P1");
+
+        t.mutableState().activePlayer = 1; // Switch to P2
+        t.mutableState().attackPool = 10;
+        t.fightEnemy(shishCombatPid, 3030u);
+        check(t.find(shishCombatPid) != nullptr,
+              "BUG-0006 (#132 Shish Kebab Restriction): Player 2 cannot fight Shish Kebab while it is in front of Player 1");
+
+        // Eliminate P1 during P1's Strike Phase (Shish Kebab strikes P1 at start of Strike Phase!) -> Shish Kebab moves in front of P2, and P2 can now fight it!
+        t.mutableState().activePlayer = 0;
+        t.mutableState().players[0].manualStrikeOffset = 50;
+        t.syncStateFromZones();
+        t.mutableState().phase = TurnPhase::StrikePhase;
+        t.resolveStrikePhase(3031u);
+        check(!t.state().players[0].alive && t.state().shishKebabTargetPlayer == 1,
+              "BUG-0006 (#132 Shish Kebab Strike & Reassignment): Struck P1 at start of Strike Phase and moved in front of next player (P2) when P1 died");
+        t.mutableState().activePlayer = 1;
+        t.mutableState().phase = TurnPhase::ActionPhase;
+        t.mutableState().attackPool = 10;
+        t.fightEnemy(shishCombatPid, 3032u);
+        check(t.find(shishCombatPid) == nullptr,
+              "BUG-0006 (#132 Shish Kebab Defeated): Player 2 defeated Shish Kebab after it moved in front of Player 2");
+
+        // 7F. BUG-0006 Predator 2 Objective 3 (Remarkable Weaponry): Event Mark & Spend 6 * to Discard Event Mark
+        t.reset(buildGameSetup(catalog, lay2, 3040u, cfg2));
+        clearWildsAndCombat(t);
+        t.mutableState().setupConfig.movie = 2;
+        t.mutableState().currentObjective = 3;
+        t.mutableState().phase = TurnPhase::ActionPhase;
+        t.mutableState().attackPool = 10;
+
+        const PileId ev146Pid = placeSingleInZone(t, 146, "wilds_0", false, false);
+        t.scanWilds(ev146Pid, 3041u);
+        check(t.state().players[0].marksCount == 1,
+              "BUG-0006 (Objective 3 Remarkable Weaponry Event): Revealing Event (#146) places it beneath active player's Avatar as an Event Mark");
+
+        t.mutableState().recruitPool = 6;
+        check(t.canDiscardEventMark(),
+              "BUG-0006 (Objective 3 Discard Event Mark Ready): canDiscardEventMark() is true with 6 * Recruit and an Event Mark");
+        t.discardEventMark();
+        check(t.state().players[0].marksCount == 0 && t.state().recruitPool == 0,
+              "BUG-0006 (Objective 3 Discard Event Mark Executed): Spent 6 * Recruit to discard Event Mark to Discarded Hazards");
     }
 
     out << "\n=============================================================\n";
