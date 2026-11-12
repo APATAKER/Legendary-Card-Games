@@ -61,6 +61,11 @@ private:
     void renderInspectModal();
     void renderPileBrowserModal();
     void renderCatalogModal();
+    void openBugReportModal(PileId focusPile = kNoPile, int focusCardDef = -1,
+                            const std::string& focusSubject = "",
+                            const std::string& focusZone = "",
+                            const std::string& prefillNotes = "");
+    void renderBugReportModal();
     void renderStatusBar();
 
     SDL_Window* window_ = nullptr;
@@ -114,6 +119,20 @@ private:
     bool showCatalogModal_ = false;
     char catalogFilter_[128] = {};
     char moveLogFilter_[128] = {};
+
+    // Bug Report & Issue Tracker Modal state
+    bool showBugReportModal_ = false;
+    int bugReportTab_ = 0;      // 0 = Record New Bug, 1 = Saved Bug Reports
+    int bugCategoryIdx_ = 0;    // Index into bug categories
+    int bugSeverityIdx_ = 1;    // 0 = Minor, 1 = Normal, 2 = High, 3 = Critical
+    int bugRecentMoveCount_ = 15;
+    char bugTitleBuf_[160] = {};
+    char bugSubjectCardBuf_[160] = {};
+    char bugSubjectZoneBuf_[96] = {};
+    char bugDescBuf_[2048] = {};
+    char bugHistoryFilter_[128] = {};
+    int bugHistoryStatusFilter_ = 0; // 0 = All, 1 = Open Only, 2 = Resolved Only
+    int selectedBugReportId_ = -1;
 
     std::string toastText_;
     float toastTimer_ = 0.f;

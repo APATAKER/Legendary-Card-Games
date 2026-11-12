@@ -1,8 +1,11 @@
 #include "game/Table.h"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -136,6 +139,9 @@ Table::Table(const Catalog& catalog, const BoardLayout& layout)
     std::filesystem::create_directories(logDir, ec);
     logFilePath_ = logDir / "movement_log.jsonl";
     textLogFilePath_ = logDir / "movement_log.txt";
+    bugReportJsonlPath_ = logDir / "bug_reports.jsonl";
+    bugReportMdPath_ = logDir / "bug_reports.md";
+    loadBugReportsFromDisk();
 }
 
 std::string Table::playerZone(int playerIdx, std::string_view role) const {
@@ -861,6 +867,477 @@ void Table::recordMove(const std::string& actionType, const std::string& cardSum
                << (entry.faceUp ? "FaceUp" : "FaceDown") << ") | " << entry.stateDelta << "\n";
         }
     }
+}
+
+void Table::setBugReportPaths(const std::filesystem::path& jsonlPath,
+                              const std::filesystem::path& mdPath) {
+    bugReportJsonlPath_ = jsonlPath;
+    bugReportMdPath_ = mdPath;
+    loadBugReportsFromDisk();
+}
+
+int Table::openBugReportCount() const {
+    int count = 0;
+    for (const auto& r : bugReports_) {
+        if (r.status != "RESOLVED") ++count;
+    }
+    return count;
+}
+
+void Table::loadBugReportsFromDisk() {
+    bugReports_.clear();
+    nextBugReportId_ = 1;
+    if (bugReportJsonlPath_.empty() || !std::filesystem::exists(bugReportJsonlPath_)) return;
+
+    std::ifstream in(bugReportJsonlPath_);
+    if (!in) return;
+
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty()) continue;
+        const auto j = nlohmann::json::parse(line, nullptr, false);
+        if (j.is_discarded() || !j.is_object()) continue;
+
+        BugReportEntry r;
+        r.id = j.value("id", nextBugReportId_);
+        r.reportCode = j.value("reportCode", "BUG-" + std::to_string(r.id));
+        r.timestamp = j.value("timestamp", "");
+        r.status = j.value("status", "OPEN");
+        r.category = j.value("category", "Card Ability / Rules");
+        r.severity = j.value("severity", "Normal");
+        r.title = j.value("title", "");
+        r.description = j.value("description", "");
+        r.subjectCard = j.value("subjectCard", "");
+        r.subjectZone = j.value("subjectZone", "");
+        r.turn = j.value("turn", 1);
+        r.phase = j.value("phase", "");
+        r.scenarioSummary = j.value("scenarioSummary", "");
+        r.tacticalSnapshot = j.value("tacticalSnapshot", "");
+        r.boardSnapshot = j.value("boardSnapshot", "");
+        if (j.contains("recentMoves") && j["recentMoves"].is_array()) {
+            for (const auto& m : j["recentMoves"]) {
+                if (m.is_string()) r.recentMoves.push_back(m.get<std::string>());
+            }
+        }
+        nextBugReportId_ = std::max(nextBugReportId_, r.id + 1);
+        bugReports_.push_back(std::move(r));
+    }
+}
+
+std::string Table::formatBugReportMarkdown(const BugReportEntry& r) const {
+    std::ostringstream md;
+    md << "## [" << r.reportCode << "] " << r.title << "\n";
+    md << "- **Status**: `" << r.status << "`  |  **Severity**: `" << r.severity
+       << "`  |  **Category**: `" << r.category << "`\n";
+    md << "- **Timestamp**: " << r.timestamp << "  |  **Scenario**: " << r.scenarioSummary
+       << "  |  **Turn / Phase**: Turn " << r.turn << " (" << r.phase << ")\n";
+    if (!r.subjectCard.empty() || !r.subjectZone.empty()) {
+        md << "- **Subject Card / Action**: "
+           << (r.subjectCard.empty() ? "N/A" : r.subjectCard)
+           << "  |  **Zone**: " << (r.subjectZone.empty() ? "N/A" : r.subjectZone) << "\n";
+    }
+    md << "\n### User Notes / Expected vs Actual\n";
+    md << (r.description.empty() ? "_(No additional user notes provided)_" : r.description)
+       << "\n";
+
+    md << "\n### Tactical State Snapshot\n```text\n" << r.tacticalSnapshot << "```\n";
+    md << "\n### Board Zones Snapshot\n```text\n" << r.boardSnapshot << "```\n";
+
+    md << "\n### Recent Move History (" << r.recentMoves.size() << " events)\n```text\n";
+    if (r.recentMoves.empty()) {
+        md << "(No moves recorded yet)\n";
+    } else {
+        for (const auto& line : r.recentMoves) {
+            md << line << "\n";
+        }
+    }
+    md << "```\n";
+    return md.str();
+}
+
+void Table::saveBugReportsToDisk() const {
+    if (!bugReportJsonlPath_.empty()) {
+        std::error_code ec;
+        if (bugReportJsonlPath_.has_parent_path()) {
+            std::filesystem::create_directories(bugReportJsonlPath_.parent_path(), ec);
+        }
+        std::ofstream jf(bugReportJsonlPath_, std::ios::trunc);
+        if (jf) {
+            for (const auto& r : bugReports_) {
+                nlohmann::json j;
+                j["id"] = r.id;
+                j["reportCode"] = r.reportCode;
+                j["timestamp"] = r.timestamp;
+                j["status"] = r.status;
+                j["category"] = r.category;
+                j["severity"] = r.severity;
+                j["title"] = r.title;
+                j["description"] = r.description;
+                j["subjectCard"] = r.subjectCard;
+                j["subjectZone"] = r.subjectZone;
+                j["turn"] = r.turn;
+                j["phase"] = r.phase;
+                j["scenarioSummary"] = r.scenarioSummary;
+                j["tacticalSnapshot"] = r.tacticalSnapshot;
+                j["boardSnapshot"] = r.boardSnapshot;
+                j["recentMoves"] = r.recentMoves;
+                jf << j.dump() << "\n";
+            }
+        }
+    }
+
+    if (!bugReportMdPath_.empty()) {
+        std::error_code ec;
+        if (bugReportMdPath_.has_parent_path()) {
+            std::filesystem::create_directories(bugReportMdPath_.parent_path(), ec);
+        }
+        std::ofstream mf(bugReportMdPath_, std::ios::trunc);
+        if (mf) {
+            mf << "# Legendary Encounters: Predator — Recorded Bug Reports\n\n";
+            mf << "Total Reports: **" << bugReports_.size() << "**  |  Open: **"
+               << openBugReportCount() << "**  |  Resolved: **"
+               << (static_cast<int>(bugReports_.size()) - openBugReportCount()) << "**\n\n";
+
+            if (!bugReports_.empty()) {
+                mf << "| ID | Status | Severity | Category | Turn / Phase | Subject Card / Zone | Summary | Timestamp |\n";
+                mf << "|---|---|---|---|---|---|---|---|\n";
+                for (int i = static_cast<int>(bugReports_.size()) - 1; i >= 0; --i) {
+                    const auto& r = bugReports_[static_cast<size_t>(i)];
+                    std::string subj = r.subjectCard;
+                    if (!r.subjectZone.empty()) {
+                        subj += subj.empty() ? r.subjectZone : (" (" + r.subjectZone + ")");
+                    }
+                    if (subj.empty()) subj = "-";
+                    mf << "| **" << r.reportCode << "** | `" << r.status << "` | " << r.severity
+                       << " | " << r.category << " | T" << r.turn << " " << r.phase << " | "
+                       << subj << " | " << r.title << " | " << r.timestamp << " |\n";
+                }
+                mf << "\n---\n\n";
+                for (int i = static_cast<int>(bugReports_.size()) - 1; i >= 0; --i) {
+                    mf << formatBugReportMarkdown(bugReports_[static_cast<size_t>(i)]);
+                    if (i > 0) mf << "\n---\n\n";
+                }
+            } else {
+                mf << "_No bug reports recorded yet._\n";
+            }
+        }
+    }
+}
+
+std::string Table::buildTacticalSnapshot() const {
+    std::ostringstream oss;
+    const char* movieStr =
+        (state_.setupConfig.movie == 2) ? "Predator 2 (LA)" : "Predator 1 (Val Verde)";
+    const char* modeStr = state_.setupConfig.playAsPredators ? "Predators (Hunter)" : "Humans (Co-op)";
+    const int nPlayers = std::max(1, state_.playerCount);
+    const int actP = std::clamp(state_.activePlayer, 0, nPlayers - 1);
+
+    auto avatarLabel = [&](int pIdx) -> std::string {
+        if (pIdx >= 0 && pIdx < static_cast<int>(state_.players.size())) {
+            const int avId = state_.players[static_cast<size_t>(pIdx)].avatarDefId;
+            if (avId >= 0 && avId < static_cast<int>(catalog_.cards.size())) {
+                const CardDef& d = catalog_.card(avId);
+                return !d.title.empty() ? d.title : d.name;
+            }
+        }
+        return "Operative";
+    };
+
+    oss << "Scenario: " << movieStr << " — " << modeStr << " (" << nPlayers << "P)\n";
+    oss << "Turn: " << state_.turnNumber << "  |  Phase: " << phaseShortName(state_.phase)
+        << "  |  Objective: " << state_.currentObjective
+        << "  |  Enemy Reshuffles: " << state_.enemyDeckReshuffles << "\n";
+    oss << "Active Turn: P" << (actP + 1) << " (" << avatarLabel(actP) << ")\n";
+    oss << "Pools: Recruit=" << state_.recruitPool << " *  |  Attack=" << state_.attackPool
+        << " ///  |  FreeScans=" << state_.freeScansAvailable
+        << "  |  AvoidStrikes=" << state_.avoidStrikesAvailable
+        << "  |  CombatPenalty=" << state_.combatZoneAttackPenalty
+        << "  |  DrawOnKill=" << state_.drawCardsOnKill << "\n";
+
+    auto joinVec = [](const std::vector<std::string>& v) {
+        if (v.empty()) return std::string("none");
+        std::string s;
+        for (size_t i = 0; i < v.size(); ++i) {
+            if (i > 0) s += ", ";
+            s += v[i];
+        }
+        return s;
+    };
+    oss << "Played Synergies: Classes=[" << joinVec(state_.playedClasses) << "]  |  Teams=["
+        << joinVec(state_.playedTeams) << "]  |  Chars=[" << joinVec(state_.playedCharacters)
+        << "]\n";
+    if (!state_.coordinatedCards.empty()) {
+        oss << "Coordinated Virtual Cards (" << state_.coordinatedCards.size() << "): ";
+        for (size_t i = 0; i < state_.coordinatedCards.size(); ++i) {
+            if (i > 0) oss << ", ";
+            const CardDef& cd = catalog_.card(state_.coordinatedCards[i].def);
+            oss << "#" << cd.id << " " << (cd.title.empty() ? cd.name : cd.title);
+        }
+        oss << "\n";
+    }
+
+    // Active Pending Modal check
+    std::vector<std::string> modals;
+    if (state_.pendingSacrificeChoice) modals.push_back("SacrificeChoice");
+    if (state_.pendingCoverMeChoice) modals.push_back("CoverMeChoice");
+    if (state_.pendingSneakPeek) modals.push_back("SneakPeekPickSlot");
+    if (state_.pendingSneakPeekChoice) modals.push_back("SneakPeekDecision");
+    if (state_.pendingKillChoice) modals.push_back("KillCardChoice");
+    if (state_.pendingHealChoice) modals.push_back("HealStrikeChoice");
+    if (state_.pendingPlayerChoiceMode != 0)
+        modals.push_back("PlayerChoiceMode=" + std::to_string(state_.pendingPlayerChoiceMode));
+    if (state_.pendingWildsSwapChoice) modals.push_back("WildsSwapChoice");
+    if (state_.pendingStatSwapChoice) modals.push_back("StatSwapChoice");
+    if (state_.pendingDiscardToDeckChoice) modals.push_back("DiscardToDeckChoice");
+    if (state_.pendingGainCardChoice) modals.push_back("GainCardChoice");
+    if (state_.pendingLikeAHunterModal) modals.push_back("LikeAHunterRevealModal");
+    oss << "Pending Modals: " << joinVec(modals) << "\n";
+
+    oss << "Squad Roster:\n";
+    for (int p = 0; p < nPlayers && p < static_cast<int>(state_.players.size()); ++p) {
+        const PlayerState& ps = state_.players[static_cast<size_t>(p)];
+        const int curHp = std::max(0, ps.health - ps.strikeDamage);
+        oss << "  P" << (p + 1) << " (" << avatarLabel(p) << "): HP " << curHp << "/" << ps.health
+            << ", DEF " << ps.defense << ", Strikes=" << ps.strikeDamage
+            << ", Marks=" << ps.marksCount << ", Alive=" << (ps.alive ? "Yes" : "No");
+        if (p == actP) oss << " [ACTIVE]";
+        if (ps.escapedInChoppa) oss << " [ESCAPED_CHOPPA]";
+        if (ps.coordinatedThisTurn) oss << " [COORD_USED]";
+        if (ps.allHandCoordinateThisTurn) oss << " [ALL_HAND_COORD]";
+        if (ps.cannotDieTurnsRemaining > 0)
+            oss << " [IMMUNE_TURNS=" << ps.cannotDieTurnsRemaining << "]";
+        oss << "\n";
+    }
+    oss << "Last Action Log: " << state_.lastActionLog << "\n";
+    return oss.str();
+}
+
+std::string Table::buildBoardSnapshot() const {
+    std::ostringstream oss;
+
+    auto formatCardInst = [&](const CardInst& c) -> std::string {
+        const CardDef& d = catalog_.card(c.def);
+        std::string s = "#" + std::to_string(d.id) + " " + (d.title.empty() ? d.name : d.title);
+        if (!d.subtitle.empty()) s += " (" + d.subtitle + ")";
+        if (!c.faceUp) s += " [FaceDown]";
+        if (c.attached) s += " [ATTACHED]";
+        if (isCardKilledInPlayed(c.uid)) s += " [KILLED]";
+        if (isCardStatsSwapped(c.uid)) s += " [SWAPPED]";
+        std::string abilLbl;
+        if (canActivateCardAbility(c.uid, &abilLbl, nullptr)) s += " [ABILITY_READY: " + abilLbl + "]";
+        return s;
+    };
+
+    // 1. Objectives & Commanders
+    if (const Pile* obj = findZonePile("objectives"); obj && !obj->cards.empty()) {
+        oss << "Objectives (" << obj->cards.size() << "): Top = " << formatCardInst(obj->top())
+            << "\n";
+    }
+    if (const Pile* cmd = findZonePile("commanders"); cmd && !cmd->cards.empty()) {
+        oss << "Commanders (" << cmd->cards.size() << "): Top = " << formatCardInst(cmd->top())
+            << "\n";
+    }
+
+    // 2. The HQ (hq_0..hq_4)
+    oss << "HQ Slots:\n";
+    for (int h = 0; h < 5; ++h) {
+        const std::string zid = "hq_" + std::to_string(h);
+        const Pile* hp = findZonePile(zid);
+        oss << "  HQ " << (h + 1) << " (" << zid << "): ";
+        if (!hp || hp->cards.empty()) {
+            oss << "[Empty]\n";
+        } else {
+            const CardDef& d = catalog_.card(hp->top().def);
+            oss << formatCardInst(hp->top()) << " [Cost " << std::max(0, d.cost) << "*, "
+                << std::max(0, d.recruit) << "*/" << std::max(0, d.attack) << "///]\n";
+        }
+    }
+
+    // 3. The Wilds (wilds_0..wilds_4)
+    oss << "The Wilds:\n";
+    for (int w = 0; w < 5; ++w) {
+        const std::string zid = "wilds_" + std::to_string(w);
+        const Pile* wp = findZonePile(zid);
+        oss << "  " << wildsName(w) << " (" << zid << ", Scan " << scanCostForZone(zid)
+            << "///): ";
+        if (!wp || wp->cards.empty()) {
+            oss << "[Empty]\n";
+        } else {
+            for (size_t i = 0; i < wp->cards.size(); ++i) {
+                if (i > 0) oss << "  +  ";
+                oss << formatCardInst(wp->cards[i]);
+            }
+            if (wp->top().faceUp) {
+                const int effAtk = effectiveEnemyAttack(*wp);
+                if (effAtk >= 0) oss << " (EffATK=" << effAtk << ")";
+            }
+            oss << "\n";
+        }
+    }
+
+    // 4. Combat Zone
+    oss << "Combat Zone: ";
+    bool anyCombat = false;
+    for (const auto& p : state_.piles) {
+        if (p.zone == "combat" && !p.cards.empty()) {
+            for (const auto& c : p.cards) {
+                if (anyCombat) oss << " | ";
+                oss << formatCardInst(c);
+                anyCombat = true;
+            }
+        }
+    }
+    if (!anyCombat) oss << "[Clear]";
+    oss << "\n";
+
+    // 5. Shared Decks & Discards
+    auto zoneCardCount = [&](const std::string& zid) -> int {
+        int total = 0;
+        for (const auto& p : state_.piles) {
+            if (p.zone == zid) total += static_cast<int>(p.cards.size());
+        }
+        return total;
+    };
+    oss << "Shared Piles: EnemyDeck(prey)=" << zoneCardCount("prey")
+        << " | Barracks=" << zoneCardCount("barracks")
+        << " | StrikesDeck=" << zoneCardCount("strikes")
+        << " | MarksDeck=" << zoneCardCount("marks")
+        << " | DeadChars=" << zoneCardCount("wounds")
+        << " | HazardDiscard=" << zoneCardCount("discard_hazards")
+        << " (Events=" << countDiscardedEvents() << ")\n";
+
+    // 6. Per-Player Board Areas
+    const int nPlayers = std::max(1, state_.playerCount);
+    for (int pIdx = 0; pIdx < nPlayers; ++pIdx) {
+        oss << "Player " << (pIdx + 1) << " Zones:\n";
+        const std::string handZid = playerZone(pIdx, "hand");
+        const std::string playedZid = playerZone(pIdx, "played");
+        const std::string strikesZid = playerZone(pIdx, "strikes");
+        const std::string marksZid = playerZone(pIdx, "marks");
+        const std::string deckZid = playerZone(pIdx, "deck");
+        const std::string discZid = playerZone(pIdx, "discard");
+
+        auto listZoneCards = [&](const std::string& zid) -> std::string {
+            std::string out;
+            int count = 0;
+            for (const auto& p : state_.piles) {
+                if (p.zone != zid) continue;
+                for (const auto& c : p.cards) {
+                    if (count > 0) out += ", ";
+                    out += formatCardInst(c);
+                    ++count;
+                }
+            }
+            if (count == 0) return "[Empty]";
+            return "(" + std::to_string(count) + ") " + out;
+        };
+
+        oss << "  Hand (" << handZid << "): " << listZoneCards(handZid) << "\n";
+        oss << "  Played (" << playedZid << "): " << listZoneCards(playedZid) << "\n";
+        oss << "  Strikes (" << strikesZid << "): " << listZoneCards(strikesZid) << "\n";
+        oss << "  Marks (" << marksZid << "): " << listZoneCards(marksZid) << "\n";
+        oss << "  Deck (" << deckZid << "): " << zoneCardCount(deckZid)
+            << " cards  |  Discard (" << discZid << "): " << zoneCardCount(discZid) << " cards";
+        if (const Pile* dp = findZonePile(discZid); dp && !dp->cards.empty()) {
+            oss << " (Top: " << formatCardInst(dp->top()) << ")";
+        }
+        oss << "\n";
+    }
+
+    return oss.str();
+}
+
+std::vector<std::string> Table::formatRecentMoves(int maxCount) const {
+    std::vector<std::string> out;
+    const int n = static_cast<int>(state_.moveLog.size());
+    const int clamped = std::clamp(maxCount, 1, 100);
+    const int startIdx = std::max(0, n - clamped);
+    for (int i = startIdx; i < n; ++i) {
+        const MoveLogEntry& e = state_.moveLog[static_cast<size_t>(i)];
+        std::ostringstream line;
+        line << "#" << std::setw(4) << std::setfill('0') << e.seq << " [" << e.timestamp << "] [T"
+             << e.turn << " " << e.phase << "] " << std::setw(14) << std::setfill(' ') << std::left
+             << e.actionType << " | " << e.cardCount << "x " << e.cardSummary << " [" << e.fromZone
+             << " -> " << e.toZone << "] (stack=" << e.destStackCount << ", "
+             << (e.faceUp ? "FaceUp" : "FaceDown") << ") | " << e.stateDelta;
+        out.push_back(line.str());
+    }
+    return out;
+}
+
+const BugReportEntry& Table::submitBugReport(const std::string& title, const std::string& category,
+                                             const std::string& severity,
+                                             const std::string& description,
+                                             const std::string& subjectCard,
+                                             const std::string& subjectZone, int recentMoveCount) {
+    BugReportEntry r;
+    r.id = nextBugReportId_++;
+    char codeBuf[32];
+    std::snprintf(codeBuf, sizeof codeBuf, "BUG-%04d", r.id);
+    r.reportCode = codeBuf;
+    r.timestamp = nowTimestampStr();
+    r.status = "OPEN";
+    r.category = category.empty() ? "Card Ability / Rules" : category;
+    r.severity = severity.empty() ? "Normal" : severity;
+    r.subjectCard = subjectCard;
+    r.subjectZone = subjectZone;
+    r.turn = state_.turnNumber;
+    r.phase = phaseShortName(state_.phase);
+
+    const char* movieStr =
+        (state_.setupConfig.movie == 2) ? "Predator 2 (LA)" : "Predator 1 (Val Verde)";
+    const char* modeStr = state_.setupConfig.playAsPredators ? "Predators" : "Humans";
+    r.scenarioSummary = std::string(movieStr) + " — " + modeStr + " (" +
+                        std::to_string(std::max(1, state_.playerCount)) + "P)";
+
+    if (!title.empty()) {
+        r.title = title;
+    } else if (!subjectCard.empty()) {
+        r.title = "Issue with " + subjectCard +
+                  (subjectZone.empty() ? "" : (" in " + subjectZone));
+    } else {
+        r.title = "Gameplay issue on Turn " + std::to_string(r.turn) + " (" + r.phase + ")";
+    }
+
+    r.description = description;
+    r.tacticalSnapshot = buildTacticalSnapshot();
+    r.boardSnapshot = buildBoardSnapshot();
+    r.recentMoves = formatRecentMoves(recentMoveCount);
+
+    bugReports_.push_back(r);
+    saveBugReportsToDisk();
+
+    // Cross-reference the bug report in the live movement log so both logs link via BUG-XXXX
+    recordMove("BUG_REPORT",
+               "[" + r.reportCode + "] " +
+                   (r.subjectCard.empty() ? r.title : (r.subjectCard + " — " + r.title)),
+               1, r.subjectZone.empty() ? "table" : r.subjectZone, "bug_reports.md",
+               static_cast<int>(bugReports_.size()), true,
+               "Recorded " + r.reportCode + " (" + r.category + ", " + r.severity + ")");
+
+    return bugReports_.back();
+}
+
+bool Table::updateBugReportStatus(int reportId, const std::string& newStatus) {
+    for (auto& r : bugReports_) {
+        if (r.id == reportId) {
+            r.status = newStatus;
+            saveBugReportsToDisk();
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Table::deleteBugReport(int reportId) {
+    for (auto it = bugReports_.begin(); it != bugReports_.end(); ++it) {
+        if (it->id == reportId) {
+            bugReports_.erase(it);
+            saveBugReportsToDisk();
+            return true;
+        }
+    }
+    return false;
 }
 
 void Table::reflowZone(const std::string& zoneId) {

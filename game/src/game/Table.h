@@ -54,6 +54,26 @@ struct MoveLogEntry {
     std::string stateDelta;
 };
 
+/// Self-contained bug report with user notes, tactical state, board snapshot, and recent moves.
+struct BugReportEntry {
+    int id = 1;                       // Numeric ID (1 -> BUG-0001)
+    std::string reportCode;           // e.g. "BUG-0001"
+    std::string timestamp;            // e.g. "2026-11-05 12:30:00"
+    std::string status = "OPEN";      // "OPEN" or "RESOLVED"
+    std::string category = "Card Ability / Rules";
+    std::string severity = "Normal";  // "Minor", "Normal", "High", "Critical"
+    std::string title;                // Short summary
+    std::string description;          // Detailed user notes / expected vs actual
+    std::string subjectCard;          // Card / pile / action in focus when reported
+    std::string subjectZone;          // Zone ID if applicable
+    int turn = 1;
+    std::string phase;
+    std::string scenarioSummary;      // e.g. "Predator 1 (Val Verde) — Humans (1P)"
+    std::string tacticalSnapshot;     // Multi-line summary of pools, active player, pending modals
+    std::string boardSnapshot;        // Multi-line summary of cards in HQ, Wilds, Combat, Player zones
+    std::vector<std::string> recentMoves; // Formatted recent move log lines leading up to the bug
+};
+
 /// One physical card.
 struct CardInst {
     std::uint32_t uid = 0;
@@ -336,6 +356,25 @@ public:
                     bool faceUp, const std::string& stateDelta);
     const std::filesystem::path& logFilePath() const { return logFilePath_; }
 
+    // --- bug reporting & issue tracking ----------------------------------------
+    std::string buildTacticalSnapshot() const;
+    std::string buildBoardSnapshot() const;
+    std::vector<std::string> formatRecentMoves(int maxCount = 15) const;
+    std::string formatBugReportMarkdown(const BugReportEntry& r) const;
+    const BugReportEntry& submitBugReport(const std::string& title, const std::string& category,
+                                          const std::string& severity,
+                                          const std::string& description,
+                                          const std::string& subjectCard,
+                                          const std::string& subjectZone, int recentMoveCount = 15);
+    bool updateBugReportStatus(int reportId, const std::string& newStatus);
+    bool deleteBugReport(int reportId);
+    const std::vector<BugReportEntry>& bugReports() const { return bugReports_; }
+    int openBugReportCount() const;
+    const std::filesystem::path& bugReportMdPath() const { return bugReportMdPath_; }
+    const std::filesystem::path& bugReportJsonlPath() const { return bugReportJsonlPath_; }
+    void setBugReportPaths(const std::filesystem::path& jsonlPath,
+                           const std::filesystem::path& mdPath);
+
     // --- official rulebook flow & actions --------------------------------------
     std::string stepPhase(std::uint32_t seed);
     std::string resolveEnemyPhase(std::uint32_t seed);
@@ -392,6 +431,8 @@ private:
     void healPlayerStrikes(int playerIdx, int count, bool leastDamageFirst, std::string& logOut);
     void eliminatePlayer(int playerIdx, std::string& logOut);
     void advanceObjectiveStack();
+    void loadBugReportsFromDisk();
+    void saveBugReportsToDisk() const;
 
     const Catalog& catalog_;
     const BoardLayout& layout_;
@@ -402,6 +443,10 @@ private:
     int flightBatchCounter_ = 0;
     std::filesystem::path logFilePath_;
     std::filesystem::path textLogFilePath_;
+    std::filesystem::path bugReportJsonlPath_;
+    std::filesystem::path bugReportMdPath_;
+    std::vector<BugReportEntry> bugReports_;
+    int nextBugReportId_ = 1;
 };
 
 /// Default preferred unique Avatar IDs (5 entries) for a given Movie (1 or 2) & Faction.

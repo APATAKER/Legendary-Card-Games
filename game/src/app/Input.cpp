@@ -385,7 +385,9 @@ void App::handleEvent(const SDL_Event& e) {
 
         switch (e.key.key) {
         case SDLK_ESCAPE:
-            if (inspectCardDef_ >= 0) {
+            if (showBugReportModal_) {
+                showBugReportModal_ = false;
+            } else if (inspectCardDef_ >= 0) {
                 inspectCardDef_ = -1;
                 inspectPile_ = kNoPile;
             } else if (browsePile_ != kNoPile) {
@@ -398,6 +400,10 @@ void App::handleEvent(const SDL_Event& e) {
                 selectedPiles_.clear();
                 showToast("Cleared selection");
             }
+            break;
+
+        case SDLK_B:
+            openBugReportModal(target != kNoPile ? target : inspectPile_, inspectCardDef_);
             break;
 
         case SDLK_G:

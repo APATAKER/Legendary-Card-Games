@@ -89,6 +89,7 @@ void App::renderOverlay() {
     renderInspectModal();
     renderPileBrowserModal();
     renderCatalogModal();
+    renderBugReportModal();
     renderStatusBar();
 }
 
@@ -430,6 +431,26 @@ void App::renderTopBar() {
         ImGui::SameLine(0.f, 10.f);
         if (ImGui::Button("Catalog (331)")) {
             showCatalogModal_ = true;
+        }
+
+        ImGui::SameLine(0.f, 10.f);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.22f, 0.14f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.72f, 0.30f, 0.18f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.84f, 0.36f, 0.22f, 1.f));
+        const int openBugs = table_->openBugReportCount();
+        const std::string bugBtnLbl =
+            (openBugs > 0) ? ("Report Bug (" + std::to_string(openBugs) + ") [B]")
+                           : std::string("Report Bug [B]");
+        if (ImGui::Button(bugBtnLbl.c_str())) {
+            const PileId focusPile =
+                (draggedPile_ != kNoPile)
+                    ? draggedPile_
+                    : (hoveredPile_ != kNoPile ? hoveredPile_ : inspectPile_);
+            openBugReportModal(focusPile, inspectCardDef_);
+        }
+        ImGui::PopStyleColor(3);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Record a self-contained bug report (with board snapshot & recent moves) or browse past reports [B].");
         }
     }
     ImGui::End();
@@ -806,6 +827,16 @@ void App::renderMoveLogWindow() {
         if (ImGui::SmallButton("Clear View")) {
             table_->mutableState().moveLog.clear();
         }
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.22f, 0.14f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.72f, 0.30f, 0.18f, 1.f));
+        if (ImGui::SmallButton("Report Bug [B]")) {
+            openBugReportModal(hoveredPile_, inspectCardDef_);
+        }
+        ImGui::PopStyleColor(2);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Click here or click [Bug] on any row below to record a bug with that move & board state!");
+        }
 
         ImGui::Separator();
         ImGui::BeginChild("MoveLogScroll");
@@ -818,6 +849,24 @@ void App::renderMoveLogWindow() {
                 continue;
             }
 
+            ImGui::PushID(static_cast<int>(e.seq));
+            if (ImGui::SmallButton("Bug")) {
+                char noteBuf[512];
+                std::snprintf(noteBuf, sizeof noteBuf,
+                              "Flagged Move #%03u [T%d %s] %s: %dx %s [%s -> %s] (%s)\nWhat went wrong: ",
+                              e.seq, e.turn, e.phase.c_str(), e.actionType.c_str(), e.cardCount,
+                              e.cardSummary.c_str(), e.fromZone.c_str(), e.toZone.c_str(),
+                              e.stateDelta.c_str());
+                openBugReportModal(kNoPile, -1,
+                                   e.cardSummary + " (" + e.actionType + " #" +
+                                       std::to_string(e.seq) + ")",
+                                   e.fromZone + " -> " + e.toZone, noteBuf);
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Report a bug starting from Move #%03u (%s)", e.seq,
+                                  e.cardSummary.c_str());
+            }
+            ImGui::SameLine();
             ImGui::TextColored(ImVec4(0.55f, 0.90f, 0.98f, 1.f), "#%03u [T%d %s]", e.seq, e.turn,
                                e.phase.c_str());
             ImGui::SameLine();
@@ -830,6 +879,7 @@ void App::renderMoveLogWindow() {
             ImGui::SameLine();
             ImGui::TextDisabled("(stack=%d, %s) %s", e.destStackCount,
                                 e.faceUp ? "FaceUp" : "FaceDown", e.stateDelta.c_str());
+            ImGui::PopID();
         }
         ImGui::EndChild();
     }
@@ -1905,6 +1955,10 @@ void App::renderContextMenu() {
         table_->checkpoint();
         table_->rotate(p->id);
     }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Report Bug with This Card / Pile...", "B")) {
+        openBugReportModal(p->id, top.def);
+    }
 
     ImGui::EndPopup();
 }
@@ -2109,6 +2163,15 @@ void App::renderInspectModal() {
                 ImGui::TextWrapped("%s", def.rulesText.c_str());
             }
 
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.22f, 0.14f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.72f, 0.30f, 0.18f, 1.f));
+            if (ImGui::Button("Report Bug with This Card [B]", ImVec2(-1.f, 0.f))) {
+                openBugReportModal(inspectPile_, inspectCardDef_);
+            }
+            ImGui::PopStyleColor(2);
+
             ImGui::EndChild();
         }
     }
@@ -2290,6 +2353,390 @@ void App::renderCatalogModal() {
     ImGui::End();
 }
 
+void App::openBugReportModal(PileId focusPile, int focusCardDef, const std::string& focusSubject,
+                             const std::string& focusZone, const std::string& prefillNotes) {
+    showBugReportModal_ = true;
+    bugReportTab_ = 0; // Open on "+ Record New Bug Report" tab
+
+    std::string subjCard = focusSubject;
+    std::string subjZone = focusZone;
+
+    if (subjCard.empty() && focusPile != kNoPile) {
+        if (const Pile* p = table_->find(focusPile); p && !p->cards.empty()) {
+            const CardInst& top = p->top();
+            const CardDef& d = catalog_.card(top.def);
+            subjCard = "#" + std::to_string(d.id) + " " + (d.title.empty() ? d.name : d.title);
+            if (!d.subtitle.empty()) subjCard += " (" + d.subtitle + ")";
+            if (!top.faceUp) subjCard += " [Face-Down]";
+            if (subjZone.empty()) subjZone = p->zone.empty() ? "loose" : p->zone;
+        }
+    }
+    if (subjCard.empty() && focusCardDef >= 0 &&
+        focusCardDef < static_cast<int>(catalog_.cards.size())) {
+        const CardDef& d = catalog_.card(focusCardDef);
+        subjCard = "#" + std::to_string(d.id) + " " + (d.title.empty() ? d.name : d.title);
+        if (!d.subtitle.empty()) subjCard += " (" + d.subtitle + ")";
+    }
+    if (subjCard.empty() && !table_->state().moveLog.empty()) {
+        const MoveLogEntry& lastMove = table_->state().moveLog.back();
+        subjCard = lastMove.cardSummary + " (" + lastMove.actionType + " #" +
+                   std::to_string(lastMove.seq) + ")";
+        if (subjZone.empty()) subjZone = lastMove.fromZone + " -> " + lastMove.toZone;
+    }
+
+    std::snprintf(bugSubjectCardBuf_, sizeof bugSubjectCardBuf_, "%s", subjCard.c_str());
+    std::snprintf(bugSubjectZoneBuf_, sizeof bugSubjectZoneBuf_, "%s", subjZone.c_str());
+    if (!prefillNotes.empty()) {
+        std::snprintf(bugDescBuf_, sizeof bugDescBuf_, "%s", prefillNotes.c_str());
+    }
+}
+
+void App::renderBugReportModal() {
+    if (!showBugReportModal_) return;
+
+    static constexpr const char* kCategories[] = {
+        "Card Ability / Rules",
+        "Turn / Phase Flow",
+        "UI / Modal Interaction",
+        "Card Movement / Zones",
+        "Multiplayer / Coordinate",
+        "Other",
+    };
+    static constexpr const char* kSeverities[] = {
+        "Minor",
+        "Normal",
+        "High",
+        "Critical",
+    };
+
+    const ImVec2 vp = ImGui::GetMainViewport()->Size;
+    ImGui::SetNextWindowSize(ImVec2(920.f, 680.f), ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+
+    if (ImGui::Begin("BUG REPORTER & SAVED ISSUE LOG [B]###BugReportModal", &showBugReportModal_,
+                     ImGuiWindowFlags_NoSavedSettings)) {
+        const auto& reports = table_->bugReports();
+        const int openCount = table_->openBugReportCount();
+
+        // Top Mode Switcher Tabs
+        {
+            const bool isRecordTab = (bugReportTab_ == 0);
+            if (isRecordTab) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.58f, 0.24f, 0.15f, 1.f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.72f, 0.30f, 0.18f, 1.f));
+            }
+            if (ImGui::Button("+ Record New Bug Report", ImVec2(240.f, 32.f))) {
+                bugReportTab_ = 0;
+            }
+            if (isRecordTab) ImGui::PopStyleColor(2);
+
+            ImGui::SameLine();
+
+            const bool isHistoryTab = (bugReportTab_ == 1);
+            if (isHistoryTab) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.46f, 0.30f, 1.f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.56f, 0.36f, 1.f));
+            }
+            char histTabLbl[80];
+            std::snprintf(histTabLbl, sizeof histTabLbl,
+                          "Saved Bug Reports (%zu total, %d open)", reports.size(), openCount);
+            if (ImGui::Button(histTabLbl, ImVec2(290.f, 32.f))) {
+                bugReportTab_ = 1;
+                if (selectedBugReportId_ < 0 && !reports.empty()) {
+                    selectedBugReportId_ = reports.back().id;
+                }
+            }
+            if (isHistoryTab) ImGui::PopStyleColor(2);
+
+            ImGui::SameLine(0.f, 16.f);
+            ImGui::TextDisabled("Saved to: %s",
+                                table_->bugReportMdPath().filename().string().c_str());
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Markdown: %s\nJSONL: %s",
+                                  table_->bugReportMdPath().string().c_str(),
+                                  table_->bugReportJsonlPath().string().c_str());
+            }
+        }
+
+        ImGui::Separator();
+
+        if (bugReportTab_ == 0) {
+            // =================================================================
+            // TAB 0: RECORD NEW BUG REPORT
+            // =================================================================
+            ImGui::TextColored(
+                ImVec4(0.98f, 0.80f, 0.32f, 1.f),
+                "Record a self-contained bug snapshot (automatically attaches board state & recent moves):");
+
+            // Row 1: Category, Severity, Recent Moves Count
+            ImGui::SetNextItemWidth(220.f);
+            ImGui::Combo("Category", &bugCategoryIdx_, kCategories, IM_ARRAYSIZE(kCategories));
+            ImGui::SameLine(0.f, 18.f);
+            ImGui::SetNextItemWidth(130.f);
+            ImGui::Combo("Severity", &bugSeverityIdx_, kSeverities, IM_ARRAYSIZE(kSeverities));
+            ImGui::SameLine(0.f, 18.f);
+            ImGui::SetNextItemWidth(150.f);
+            ImGui::SliderInt("Recent Moves", &bugRecentMoveCount_, 5, 50, "%d moves");
+
+            // Row 2: Subject Card / Action & Zone
+            ImGui::SetNextItemWidth(430.f);
+            ImGui::InputTextWithHint("Subject Card / Move",
+                                     "e.g. #8 STICK AROUND or PLAY_CARD...", bugSubjectCardBuf_,
+                                     sizeof bugSubjectCardBuf_);
+            ImGui::SameLine(0.f, 16.f);
+            ImGui::SetNextItemWidth(220.f);
+            ImGui::InputTextWithHint("Zone", "e.g. p0_hand, wilds_2, combat...", bugSubjectZoneBuf_,
+                                     sizeof bugSubjectZoneBuf_);
+
+            // Row 3: Short Bug Summary / Title
+            ImGui::SetNextItemWidth(-120.f);
+            ImGui::InputTextWithHint(
+                "Summary / Title",
+                "Short title (optional — auto-filled from Subject Card/Turn if left blank)...",
+                bugTitleBuf_, sizeof bugTitleBuf_);
+
+            // Row 4: Multiline Description (What Happened / Expected vs Actual)
+            ImGui::TextColored(ImVec4(0.55f, 0.95f, 0.68f, 1.f),
+                               "What Happened / Expected vs Actual Behavior:");
+            ImGui::InputTextMultiline(
+                "##BugDescInput", bugDescBuf_, sizeof bugDescBuf_, ImVec2(-1.f, 105.f));
+
+            // Row 5: Live Auto-Captured Context Preview (Side-by-Side Panes)
+            ImGui::Spacing();
+            ImGui::TextDisabled(
+                "Auto-Captured Snapshot Preview (included automatically in logs/bug_reports.md):");
+
+            const float previewH = ImGui::GetContentRegionAvail().y - 46.f;
+            const float halfW = (ImGui::GetContentRegionAvail().x - 10.f) * 0.5f;
+
+            ImGui::BeginChild("BugStatePreview", ImVec2(halfW, std::max(120.f, previewH)), true);
+            ImGui::TextColored(ImVec4(0.45f, 0.92f, 0.65f, 1.f),
+                               "Tactical & Board Zones Snapshot:");
+            ImGui::Separator();
+            const std::string tacSnap = table_->buildTacticalSnapshot();
+            const std::string brdSnap = table_->buildBoardSnapshot();
+            ImGui::TextUnformatted(tacSnap.c_str());
+            ImGui::Separator();
+            ImGui::TextUnformatted(brdSnap.c_str());
+            ImGui::EndChild();
+
+            ImGui::SameLine(0.f, 10.f);
+
+            ImGui::BeginChild("BugMovesPreview", ImVec2(0.f, std::max(120.f, previewH)), true);
+            const auto recentLines = table_->formatRecentMoves(bugRecentMoveCount_);
+            ImGui::TextColored(ImVec4(0.55f, 0.90f, 0.98f, 1.f),
+                               "Attached Recent Moves (%zu events):", recentLines.size());
+            ImGui::Separator();
+            if (recentLines.empty()) {
+                ImGui::TextDisabled("(No moves in current view)");
+            } else {
+                for (int i = static_cast<int>(recentLines.size()) - 1; i >= 0; --i) {
+                    ImGui::TextWrapped("%s", recentLines[static_cast<size_t>(i)].c_str());
+                }
+            }
+            ImGui::EndChild();
+
+            // Row 6: Submit & Clear Buttons
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.54f, 0.32f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.66f, 0.40f, 1.f));
+            if (ImGui::Button("Save Bug Report to logs/bug_reports.md", ImVec2(340.f, 34.f))) {
+                const BugReportEntry& saved = table_->submitBugReport(
+                    bugTitleBuf_, kCategories[bugCategoryIdx_], kSeverities[bugSeverityIdx_],
+                    bugDescBuf_, bugSubjectCardBuf_, bugSubjectZoneBuf_, bugRecentMoveCount_);
+                selectedBugReportId_ = saved.id;
+                bugTitleBuf_[0] = '\0';
+                bugDescBuf_[0] = '\0';
+                bugReportTab_ = 1; // Switch to Saved Bug Reports view so user sees their saved report
+                showToast("Recorded " + saved.reportCode + " -> " +
+                          table_->bugReportMdPath().filename().string());
+            }
+            ImGui::PopStyleColor(2);
+
+            ImGui::SameLine();
+            if (ImGui::Button("Clear Fields", ImVec2(130.f, 34.f))) {
+                bugTitleBuf_[0] = '\0';
+                bugSubjectCardBuf_[0] = '\0';
+                bugSubjectZoneBuf_[0] = '\0';
+                bugDescBuf_[0] = '\0';
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Close [Esc]", ImVec2(120.f, 34.f))) {
+                showBugReportModal_ = false;
+            }
+        } else {
+            // =================================================================
+            // TAB 1: SAVED BUG REPORTS BROWSER (LOOK BACK WITHOUT FULL LOGS)
+            // =================================================================
+            ImGui::SetNextItemWidth(260.f);
+            ImGui::InputTextWithHint("##BugHistFilter",
+                                     "Search bug ID, card, title, or notes...", bugHistoryFilter_,
+                                     sizeof bugHistoryFilter_);
+            ImGui::SameLine(0.f, 14.f);
+            if (ImGui::RadioButton("All", bugHistoryStatusFilter_ == 0))
+                bugHistoryStatusFilter_ = 0;
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Open Only", bugHistoryStatusFilter_ == 1))
+                bugHistoryStatusFilter_ = 1;
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Resolved Only", bugHistoryStatusFilter_ == 2))
+                bugHistoryStatusFilter_ = 2;
+
+            ImGui::Separator();
+
+            const float availH = ImGui::GetContentRegionAvail().y - 8.f;
+            // Left Pane: Bug Report List
+            ImGui::BeginChild("BugReportListPane", ImVec2(320.f, availH), true);
+            if (reports.empty()) {
+                ImGui::TextDisabled("No bug reports recorded yet.\nSwitch to '+ Record New Bug Report' to log an issue.");
+            } else {
+                for (int i = static_cast<int>(reports.size()) - 1; i >= 0; --i) {
+                    const BugReportEntry& r = reports[static_cast<size_t>(i)];
+                    if (bugHistoryStatusFilter_ == 1 && r.status == "RESOLVED") continue;
+                    if (bugHistoryStatusFilter_ == 2 && r.status != "RESOLVED") continue;
+                    if (!containsCaseInsensitive(r.reportCode, bugHistoryFilter_) &&
+                        !containsCaseInsensitive(r.title, bugHistoryFilter_) &&
+                        !containsCaseInsensitive(r.description, bugHistoryFilter_) &&
+                        !containsCaseInsensitive(r.subjectCard, bugHistoryFilter_) &&
+                        !containsCaseInsensitive(r.category, bugHistoryFilter_)) {
+                        continue;
+                    }
+
+                    ImGui::PushID(r.id);
+                    const bool isSel = (r.id == selectedBugReportId_);
+                    if (isSel) {
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.45f, 0.32f, 1.f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                                              ImVec4(0.24f, 0.54f, 0.38f, 1.f));
+                    } else if (r.status == "RESOLVED") {
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.22f, 0.19f, 0.85f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                                              ImVec4(0.22f, 0.30f, 0.26f, 1.f));
+                    } else {
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.36f, 0.18f, 0.14f, 0.92f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                                              ImVec4(0.48f, 0.24f, 0.18f, 1.f));
+                    }
+
+                    char itemLbl[240];
+                    std::snprintf(itemLbl, sizeof itemLbl, "[%s] [%s] %s\nT%d %s | %s",
+                                  r.reportCode.c_str(), r.status.c_str(), r.title.c_str(), r.turn,
+                                  r.phase.c_str(), r.timestamp.c_str());
+                    if (ImGui::Button(itemLbl, ImVec2(-1.f, 46.f))) {
+                        selectedBugReportId_ = r.id;
+                    }
+                    ImGui::PopStyleColor(2);
+                    ImGui::PopID();
+                }
+            }
+            ImGui::EndChild();
+
+            ImGui::SameLine(0.f, 10.f);
+
+            // Right Pane: Selected Bug Report Details
+            ImGui::BeginChild("BugReportDetailPane", ImVec2(0.f, availH), true);
+            const BugReportEntry* sel = nullptr;
+            for (const auto& r : reports) {
+                if (r.id == selectedBugReportId_) {
+                    sel = &r;
+                    break;
+                }
+            }
+            if (!sel && !reports.empty()) {
+                sel = &reports.back();
+                selectedBugReportId_ = sel->id;
+            }
+
+            if (!sel) {
+                ImGui::TextDisabled("Select a bug report on the left to inspect its details.");
+            } else {
+                const bool isResolved = (sel->status == "RESOLVED");
+                const ImVec4 statusCol = isResolved ? ImVec4(0.45f, 0.95f, 0.62f, 1.f)
+                                                    : ImVec4(0.98f, 0.55f, 0.40f, 1.f);
+                ImGui::TextColored(statusCol, "[%s] [%s] %s", sel->reportCode.c_str(),
+                                   sel->status.c_str(), sel->title.c_str());
+
+                // Action Bar for Selected Report
+                if (ImGui::SmallButton(isResolved ? "Reopen Issue" : "Mark as Resolved")) {
+                    const std::string nextStatus = isResolved ? "OPEN" : "RESOLVED";
+                    const std::string code = sel->reportCode;
+                    table_->updateBugReportStatus(sel->id, nextStatus);
+                    showToast(code + " marked as " + nextStatus);
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Copy Markdown to Clipboard")) {
+                    const std::string md = table_->formatBugReportMarkdown(*sel);
+                    ImGui::SetClipboardText(md.c_str());
+                    showToast("Copied " + sel->reportCode + " markdown report to clipboard!");
+                }
+                ImGui::SameLine();
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.52f, 0.16f, 0.16f, 1.f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.68f, 0.22f, 0.22f, 1.f));
+                if (ImGui::SmallButton("Delete Report")) {
+                    const int delId = sel->id;
+                    const std::string delCode = sel->reportCode;
+                    table_->deleteBugReport(delId);
+                    selectedBugReportId_ =
+                        table_->bugReports().empty() ? -1 : table_->bugReports().back().id;
+                    showToast("Deleted " + delCode);
+                    ImGui::PopStyleColor(2);
+                    ImGui::EndChild();
+                    ImGui::End();
+                    return;
+                }
+                ImGui::PopStyleColor(2);
+
+                ImGui::Separator();
+                ImGui::TextDisabled("Timestamp: %s  |  Category: %s  |  Severity: %s",
+                                    sel->timestamp.c_str(), sel->category.c_str(),
+                                    sel->severity.c_str());
+                ImGui::TextDisabled("Scenario: %s  |  Turn %d (%s)", sel->scenarioSummary.c_str(),
+                                    sel->turn, sel->phase.c_str());
+                if (!sel->subjectCard.empty() || !sel->subjectZone.empty()) {
+                    ImGui::TextColored(ImVec4(0.98f, 0.85f, 0.35f, 1.f),
+                                       "Subject Card / Move: %s   |   Zone: %s",
+                                       sel->subjectCard.empty() ? "N/A" : sel->subjectCard.c_str(),
+                                       sel->subjectZone.empty() ? "N/A" : sel->subjectZone.c_str());
+                }
+
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.55f, 0.95f, 0.68f, 1.f),
+                                   "User Notes / Expected vs Actual:");
+                ImGui::TextWrapped("%s", sel->description.empty()
+                                             ? "(No additional user notes provided)"
+                                             : sel->description.c_str());
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.55f, 0.90f, 0.98f, 1.f),
+                                   "Captured Recent Moves (%zu events leading up to bug):",
+                                   sel->recentMoves.size());
+                ImGui::BeginChild("SavedBugMovesBox", ImVec2(0.f, 145.f), true);
+                if (sel->recentMoves.empty()) {
+                    ImGui::TextDisabled("(No moves recorded)");
+                } else {
+                    for (int i = static_cast<int>(sel->recentMoves.size()) - 1; i >= 0; --i) {
+                        ImGui::TextWrapped("%s", sel->recentMoves[static_cast<size_t>(i)].c_str());
+                    }
+                }
+                ImGui::EndChild();
+
+                ImGui::Spacing();
+                ImGui::TextColored(ImVec4(0.45f, 0.92f, 0.65f, 1.f),
+                                   "Captured Tactical & Board Zones Snapshot:");
+                ImGui::BeginChild("SavedBugSnapshotBox", ImVec2(0.f, 0.f), true);
+                ImGui::TextUnformatted(sel->tacticalSnapshot.c_str());
+                ImGui::Separator();
+                ImGui::TextUnformatted(sel->boardSnapshot.c_str());
+                ImGui::EndChild();
+            }
+            ImGui::EndChild();
+        }
+    }
+    ImGui::End();
+}
+
 void App::renderStatusBar() {
     const ImVec2 vp = ImGui::GetMainViewport()->Size;
     ImGui::SetNextWindowPos(ImVec2(14.f, vp.y - 44.f), ImGuiCond_Always);
@@ -2313,11 +2760,11 @@ void App::renderStatusBar() {
             }
             ImGui::SameLine();
             ImGui::TextDisabled("(%zu in pile, zone=%s)  |  Ctrl+Click: Multi-Select  [G] Stack  "
-                                "[M] Drag Stack  R-Click: Menu",
+                                "[M] Drag Stack  [B] Report Bug  R-Click: Menu",
                                 p->cards.size(), p->zone.empty() ? "loose" : p->zone.c_str());
         } else {
             ImGui::TextDisabled("Ctrl+Click: Multi-Select  |  [G] Stack Selected  |  [M] Toggle Drag Whole Stack  "
-                                "|  [L] Move Log  |  Drag cards into Player Area zones to update state!");
+                                "|  [L] Move Log  |  [B] Report Bug");
         }
 
         if (toastTimer_ > 0.f && !toastText_.empty()) {

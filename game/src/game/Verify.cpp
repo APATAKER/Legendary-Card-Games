@@ -1226,6 +1226,54 @@ int runMechanicsVerification(const std::filesystem::path& reportPath) {
               "Three Hundred City Blocks Ongoing: Killing Final Enemy paid 4 * Recruit and achieved Major Victory");
     }
 
+    // =========================================================================
+    // PART 5: BUG REPORTING & ISSUE TRACKER (SNAPSHOTS, RECENT MOVES & DISK IO)
+    // =========================================================================
+    out << "\n=== PART 5: BUG REPORTING & ISSUE TRACKER ===\n";
+    {
+        const std::filesystem::path tmpJsonl = reportPath.parent_path() / "verify_bug_reports.jsonl";
+        const std::filesystem::path tmpMd = reportPath.parent_path() / "verify_bug_reports.md";
+        std::error_code ec;
+        std::filesystem::remove(tmpJsonl, ec);
+        std::filesystem::remove(tmpMd, ec);
+
+        Table t(catalog, lay1);
+        t.setBugReportPaths(tmpJsonl, tmpMd);
+        t.reset(buildGameSetup(catalog, lay1, 2800u, cfg1));
+        t.resolveEnemyPhase(2801u);
+
+        const BugReportEntry& rep = t.submitBugReport(
+            "Test bug report summary", "Card Ability / Rules", "High",
+            "Expected card ability to trigger, actual behavior differed.",
+            "#8 STICK AROUND", "p0_hand", 10);
+
+        check(rep.id == 1 && rep.reportCode == "BUG-0001" && rep.status == "OPEN",
+              "Bug Report Creation: Assigned BUG-0001 with OPEN status");
+        check(!rep.tacticalSnapshot.empty() && !rep.boardSnapshot.empty() &&
+                  !rep.recentMoves.empty(),
+              "Bug Report Snapshots: Auto-captured Tactical Snapshot, Board Zones Snapshot, and Recent Moves");
+        check(std::filesystem::exists(tmpJsonl) && std::filesystem::exists(tmpMd),
+              "Bug Report Persistence: Wrote both JSONL and Markdown bug report files to disk");
+
+        // Reload in a second Table instance and verify persistence, status update, and deletion
+        Table t2(catalog, lay1);
+        t2.setBugReportPaths(tmpJsonl, tmpMd);
+        check(t2.bugReports().size() == 1 && t2.openBugReportCount() == 1 &&
+                  t2.bugReports()[0].title == "Test bug report summary",
+              "Bug Report Reload: Loaded saved BUG-0001 from JSONL across sessions");
+
+        const bool updated = t2.updateBugReportStatus(1, "RESOLVED");
+        check(updated && t2.openBugReportCount() == 0 && t2.bugReports()[0].status == "RESOLVED",
+              "Bug Report Status Update: Marked BUG-0001 as RESOLVED and synced to disk");
+
+        const bool deleted = t2.deleteBugReport(1);
+        check(deleted && t2.bugReports().empty(),
+              "Bug Report Deletion: Deleted BUG-0001 cleanly");
+
+        std::filesystem::remove(tmpJsonl, ec);
+        std::filesystem::remove(tmpMd, ec);
+    }
+
     out << "\n=============================================================\n";
     out << "VERIFICATION SUMMARY: " << passed << " PASSED, " << failed << " FAILED\n";
     out << "=============================================================\n";
