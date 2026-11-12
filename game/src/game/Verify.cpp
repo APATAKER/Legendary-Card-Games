@@ -1274,6 +1274,114 @@ int runMechanicsVerification(const std::filesystem::path& reportPath) {
         std::filesystem::remove(tmpMd, ec);
     }
 
+    // =========================================================================
+    // PART 6: REPORTED BUG REGRESSION SUITE (BUG-0001, BUG-0003 — PREDATOR 2 HEROES #16-#31)
+    // =========================================================================
+    out << "\n=== PART 6: REPORTED BUG REGRESSION SUITE (BUG-0001 & BUG-0003) ===\n";
+    {
+        // 6A. Verify all 16 Predator 2 Barracks Heroes (#16-#31: Danny, Harrigan, Keyes, Lambert) have enriched non-zero costs & stats
+        bool allPred2HeroesEnriched = true;
+        for (int cid = 16; cid <= 31; ++cid) {
+            const CardDef& cd = catalog.card(cid);
+            if (cd.cost <= 0 || cd.title.empty() || cd.subtitle.empty() ||
+                cd.team != "Harrigan's Squad" || cd.classType.empty()) {
+                allPred2HeroesEnriched = false;
+                break;
+            }
+        }
+        check(allPred2HeroesEnriched,
+              "BUG-0003 (Catalog Enrichment #16-#31): All 16 Predator 2 Barracks Heroes (Danny, Harrigan, Keyes, Lambert) have valid non-zero costs, stats, classes, and team");
+        check(catalog.card(20).title == "THE SPEECH" && catalog.card(20).cost == 1 &&
+                  catalog.card(20).attack == 1 && hasKw(catalog.card(20), "Coordinate"),
+              "BUG-0001 (Catalog #20 Harrigan 2 Common): 'The Speech' costs 1 *, gives 1 /// Attack, and has Coordinate");
+
+        // 6B. Recruiting #20 Harrigan 2 Common ("The Speech") deducts 1 * Recruit (cannot be recruited with 0 *)
+        Table t(catalog, lay1);
+        t.reset(buildGameSetup(catalog, lay1, 2900u, cfg1));
+        clearWildsAndCombat(t);
+        auto& piles = t.mutableState().piles;
+        piles.erase(std::remove_if(piles.begin(), piles.end(),
+                                   [](const Pile& p) { return p.zone == "p0_hand" || p.zone == "hq_0"; }),
+                    piles.end());
+        t.mutableState().phase = TurnPhase::ActionPhase;
+        const PileId hq0Pid = placeSingleInZone(t, 20, "hq_0", true, false);
+        t.syncStateFromZones();
+
+        // Attempt recruit with 0 * -> must fail
+        t.recruitCard(hq0Pid, 2901u);
+        const Pile* hq0StillThere = t.findZonePile("hq_0");
+        check(hq0StillThere && !hq0StillThere->cards.empty() && hq0StillThere->top().def == 20,
+              "BUG-0001 & BUG-0003 (0 * Guard): Cannot recruit #20 Harrigan 2 Common ('The Speech', cost 1 *) with 0 * Recruit");
+
+        // Give 1 * Recruit -> recruit succeeds and deducts 1 *
+        placeSingleInZone(t, 225, "p0_hand", true, false); // Experience (1 *)
+        t.syncStateFromZones();
+        check(t.state().recruitPool == 1, "P1 has 1 * Recruit from Experience in hand");
+        t.recruitCard(hq0Pid, 2902u);
+        bool speechInDiscard = false;
+        if (const Pile* disc = t.findZonePile("p0_discard")) {
+            for (const auto& c : disc->cards) {
+                if (c.def == 20) speechInDiscard = true;
+            }
+        }
+        check(speechInDiscard && t.state().recruitPool == 0,
+              "BUG-0001 & BUG-0003 (1 * Deducted): Recruiting #20 'The Speech' spent 1 * Recruit and placed it in P1 Discard");
+
+        // 6C. Showboat scaling (#16 Fifteen Years on the Street +1 * with another Danny; #21 Now It's Personal +1 /// with another Harrigan; #24 Enjoy the Show free Scan with another Keyes)
+        piles.erase(std::remove_if(piles.begin(), piles.end(),
+                                   [](const Pile& p) { return p.zone == "p0_hand" || p.zone == "p0_played"; }),
+                    piles.end());
+        t.mutableState().accountedCardRecruit.clear();
+        t.mutableState().accountedCardAttack.clear();
+        t.mutableState().accountedPlayedUids.clear();
+        t.mutableState().recruitPool = 0;
+        t.mutableState().attackPool = 0;
+        placeSingleInZone(t, 16, "p0_played", true, false); // Danny: 2+ *
+        t.syncStateFromZones();
+        check(t.state().recruitPool == 2,
+              "Showboat (#16 Fifteen Years on the Street solo): Gives base 2 * Recruit without another Danny");
+        placeSingleInZone(t, 17, "p0_played", true, false); // Second Danny (0 *, 1 ///)
+        t.syncStateFromZones();
+        check(t.state().recruitPool == 3 && t.state().attackPool == 1,
+              "Showboat (#16 Fifteen Years on the Street active): Gives 3 * Recruit (+1 * Showboat) when another Danny is in turn");
+
+        placeSingleInZone(t, 21, "p0_played", true, false); // Harrigan: 2+ ///
+        placeSingleInZone(t, 20, "p0_played", true, false); // Second Harrigan: 1 ///
+        t.syncStateFromZones();
+        check(t.state().attackPool == 1 + 3 + 1,
+              "Showboat (#21 Now It's Personal active): Gives 3 /// Attack (+1 /// Showboat) when another Harrigan is in turn");
+
+        placeSingleInZone(t, 24, "p0_played", true, false); // Keyes: Enjoy the Show
+        placeSingleInZone(t, 25, "p0_played", true, false); // Second Keyes
+        t.syncStateFromZones();
+        check(t.state().freeScansAvailable == 1,
+              "Showboat (#24 Enjoy the Show active): Grants 1 free Scan when another Keyes is in turn");
+
+        // 6D. #19 Put Him on the Payroll (Skip Enemy Phase next turn), #23 I'm Gonna Finish It (Double Attack), #27 This Is Between Him and Me (Scan with Recruit), #30 Luck Is My Specialty (Top-deck gained cards)
+        const PileId p19 = placeSingleInZone(t, 19, "p0_hand", true, false);
+        t.playCard(p19, 2903u);
+        check(t.state().skipNextEnemyPhase,
+              "#19 Put Him on the Payroll: Playing card sets skipNextEnemyPhase = true");
+
+        const PileId p23 = placeSingleInZone(t, 23, "p0_played", true, false);
+        t.syncStateFromZones();
+        const int atkBeforeDouble = t.state().attackPool;
+        t.activateCardAbility(t.find(p23)->top().uid, 2904u);
+        check(t.state().attackPool == atkBeforeDouble * 2,
+              "#23 I'm Gonna Finish It: Activated ability doubled active player's Attack pool");
+
+        placeSingleInZone(t, 27, "p0_played", true, false); // 4 * Recruit + canScanWithRecruitThisTurn
+        t.syncStateFromZones();
+        check(t.state().canScanWithRecruitThisTurn,
+              "#27 This Is Between Him and Me: Enables scanning with Recruit points this turn");
+
+        const PileId p30 = placeSingleInZone(t, 30, "p0_played", true, false); // Leadership; #16 & #27 are Leadership so superpower unlocked
+        t.syncStateFromZones();
+        t.activateCardAbility(t.find(p30)->top().uid, 2905u);
+        check(t.state().putGainedCardsOnDeckThisTurn,
+              "#30 Luck Is My Specialty [Leadership]: Activated ability puts gained cards on top of Deck this turn");
+    }
+
     out << "\n=============================================================\n";
     out << "VERIFICATION SUMMARY: " << passed << " PASSED, " << failed << " FAILED\n";
     out << "=============================================================\n";

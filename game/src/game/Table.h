@@ -166,6 +166,12 @@ struct TableState {
     int coordinatedCountThisTurn = 0;
     bool defensivePositionAttachedToHills = false;
     bool threeHundredCityBlocksAttachedToFinalEnemy = false;
+    bool skipNextEnemyPhase = false;
+    bool skipEnemyPhaseThisTurn = false;
+    bool canScanWithRecruitThisTurn = false;
+    bool putGainedCardsOnDeckThisTurn = false;
+    int nextGainRedirectPlayer = -1;
+    std::vector<std::uint32_t> gainedCardUidsThisTurn;
 
     // --- Interactive Choice Modals ---
     bool pendingSacrificeChoice = false;
@@ -214,6 +220,14 @@ struct TableState {
     // Like A Hunter (id 109): Informational top-3 deck reveal modal
     bool pendingLikeAHunterModal = false;
     std::vector<RevealedDeckCardEntry> likeAHunterRevealed;
+
+    // Predator 2 Hero Modals (id 18 Out Front Having Lunch, id 22 The Door Swings Both Ways, id 31 Bag of Tricks)
+    bool pendingDiscardKillChoice = false;
+    std::vector<int> discardKillDonePlayers;
+    bool pendingDoorSwingsChoice = false;
+    std::vector<std::uint32_t> doorSwingsSelectedUids;
+    bool pendingMoveMarkChoice = false;
+    int moveMarkSourcePlayer = -1;
 
     std::vector<std::string> playedClasses;
     std::vector<std::string> playedTeams;
@@ -301,6 +315,7 @@ public:
     int countTurnClass(std::string_view classType) const;
     int countTurnTeam(std::string_view teamName) const;
     int countOtherBarracksChars(std::string_view mySubtitle) const;
+    int countOtherSameCharCards(std::uint32_t myUid, std::string_view mySubtitle) const;
     int maxAbilityActivationsForCard(const CardInst& c) const;
     int remainingAbilityActivations(const CardInst& c, std::string* labelOut = nullptr,
                                     std::string* reasonOut = nullptr) const;
@@ -326,6 +341,11 @@ public:
     int selectedCoverMeAttackTotal() const;
     std::string resolveCoverMeChoice(bool coverAndCancelStrike, std::uint32_t seed);
     void dismissLikeAHunterModal() { state_.pendingLikeAHunterModal = false; }
+    std::string resolveDiscardKillChoice(int playerIdx, std::uint32_t cardUid);
+    std::string finishDiscardKillChoice();
+    void toggleDoorSwingsCard(std::uint32_t cardUid);
+    std::string resolveDoorSwingsChoice(std::uint32_t seed);
+    std::string resolveMoveMarkChoice(int fromPlayerIdx, int toPlayerIdx);
 
     // --- physical tabletop operations (call checkpoint() once per user action) --
     void checkpoint();

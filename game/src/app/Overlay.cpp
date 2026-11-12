@@ -1505,15 +1505,19 @@ void App::renderAbilityModals() {
                                 ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(ImVec2(700.f, 0.f), ImGuiCond_Always);
         if (ImGui::Begin("PLAYER ABILITY PROMPT###PlayerPickerModal", nullptr, flags)) {
-            if (st.pendingPlayerChoiceMode == 1 || st.pendingPlayerChoiceMode == 3) {
+            if (st.pendingPlayerChoiceMode == 1 || st.pendingPlayerChoiceMode == 3 ||
+                st.pendingPlayerChoiceMode == 4) {
                 ImGui::TextColored(
                     ImVec4(0.45f, 0.95f, 0.62f, 1.f), "%s",
                     st.pendingPlayerChoiceMode == 1
                         ? "Ol' Painless Is Waiting [Leadership]: Choose a player to draw 2 cards, then discard 2 cards:"
-                        : "I Can Get Even: Choose a player whose hand cards all gain Coordinate this turn:");
+                        : (st.pendingPlayerChoiceMode == 3
+                               ? "I Can Get Even: Choose a player whose hand cards all gain Coordinate this turn:"
+                               : "Cowboy S#!%: Choose another player to receive the next character you gain this turn:"));
                 ImGui::Separator();
                 for (int q = 0; q < st.playerCount; ++q) {
                     if (q >= static_cast<int>(st.players.size())) break;
+                    if (st.pendingPlayerChoiceMode == 4 && q == st.activePlayer) continue;
                     const PlayerState& ps = st.players[static_cast<size_t>(q)];
                     if (!ps.alive || ps.escapedInChoppa) continue;
                     char pBtn[128];
@@ -1743,6 +1747,147 @@ void App::renderAbilityModals() {
 
             if (ImGui::Button("Acknowledge & Continue", ImVec2(-1.f, 34.f))) {
                 table_->dismissLikeAHunterModal();
+            }
+        }
+        ImGui::End();
+    }
+
+    // 9. OUT FRONT HAVING LUNCH (id 18): Each player may kill a card in their discard pile
+    if (st.pendingDiscardKillChoice) {
+        ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(720.f, 0.f), ImGuiCond_Always);
+        if (ImGui::Begin("OUT FRONT HAVING LUNCH [SURVIVAL]: KILL DISCARD PILE CARDS###DiscardKillModal",
+                         nullptr, flags)) {
+            ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.62f, 1.f),
+                               "Each player may kill up to 1 card in their Discard pile:");
+            ImGui::Separator();
+            ImGui::BeginChild("DiscardKillList", ImVec2(0.f, 240.f), true);
+            for (int q = 0; q < st.playerCount; ++q) {
+                if (q >= static_cast<int>(st.players.size())) break;
+                const PlayerState& ps = st.players[static_cast<size_t>(q)];
+                if (!ps.alive || ps.escapedInChoppa) continue;
+                const bool done = std::find(st.discardKillDonePlayers.begin(),
+                                            st.discardKillDonePlayers.end(),
+                                            q) != st.discardKillDonePlayers.end();
+                if (done) {
+                    ImGui::TextDisabled("Player %d: Already killed a card from Discard.", q + 1);
+                    continue;
+                }
+                const Pile* disc = table_->findZonePile(table_->playerZone(q, "discard"));
+                if (!disc || disc->cards.empty()) {
+                    ImGui::TextDisabled("Player %d: Discard pile is empty.", q + 1);
+                    continue;
+                }
+                ImGui::TextColored(ImVec4(0.98f, 0.85f, 0.35f, 1.f), "Player %d (%s) Discard:",
+                                   q + 1, shortAvatarTitle(catalog_, ps.avatarDefId));
+                for (int i = static_cast<int>(disc->cards.size()) - 1; i >= 0; --i) {
+                    const CardInst& c = disc->cards[static_cast<size_t>(i)];
+                    const CardDef& cd = catalog_.card(c.def);
+                    ImGui::PushID(static_cast<int>(c.uid));
+                    char kBtn[180];
+                    std::snprintf(kBtn, sizeof kBtn, "P%d Kill: %s  (%d * / %d ///)", q + 1,
+                                  (cd.title.empty() ? cd.name.c_str() : cd.title.c_str()),
+                                  std::max(0, cd.recruit), std::max(0, cd.attack));
+                    if (ImGui::Button(kBtn, ImVec2(-1.f, 30.f))) {
+                        table_->checkpoint();
+                        showToast(table_->resolveDiscardKillChoice(q, c.uid));
+                    }
+                    ImGui::PopID();
+                }
+            }
+            ImGui::EndChild();
+            if (ImGui::Button("Done / Finish", ImVec2(-1.f, 34.f))) {
+                table_->checkpoint();
+                showToast(table_->finishDiscardKillChoice());
+            }
+        }
+        ImGui::End();
+    }
+
+    // 10. THE DOOR SWINGS BOTH WAYS (id 22): Discard any number of cards from hand, then draw that many
+    if (st.pendingDoorSwingsChoice) {
+        ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(720.f, 0.f), ImGuiCond_Always);
+        if (ImGui::Begin("THE DOOR SWINGS BOTH WAYS [INTEL]: DISCARD & REDRAW###DoorSwingsModal",
+                         nullptr, flags)) {
+            ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.62f, 1.f),
+                               "Select any number of cards in your Hand to discard, then draw that many cards:");
+            ImGui::Separator();
+            const std::string hZid = table_->activePlayerZone("hand");
+            ImGui::BeginChild("DoorSwingsHandList", ImVec2(0.f, 230.f), true);
+            for (const auto& p : st.piles) {
+                if (p.zone != hZid || p.cards.empty()) continue;
+                const CardInst& c = p.top();
+                const CardDef& cd = catalog_.card(c.def);
+                const bool sel = std::find(st.doorSwingsSelectedUids.begin(),
+                                           st.doorSwingsSelectedUids.end(),
+                                           c.uid) != st.doorSwingsSelectedUids.end();
+                ImGui::PushID(static_cast<int>(c.uid));
+                if (sel) {
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.52f, 0.30f, 1.f));
+                }
+                char dBtn[180];
+                std::snprintf(dBtn, sizeof dBtn, "%s%s  (%d * / %d ///)",
+                              sel ? "[SELECTED] " : "",
+                              (cd.title.empty() ? cd.name.c_str() : cd.title.c_str()),
+                              std::max(0, cd.recruit), std::max(0, cd.attack));
+                if (ImGui::Button(dBtn, ImVec2(-1.f, 32.f))) {
+                    table_->toggleDoorSwingsCard(c.uid);
+                }
+                if (sel) {
+                    ImGui::PopStyleColor();
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
+            char confirmLbl[128];
+            std::snprintf(confirmLbl, sizeof confirmLbl,
+                          "Discard %zu Selected Card(s) & Draw %zu",
+                          st.doorSwingsSelectedUids.size(), st.doorSwingsSelectedUids.size());
+            if (ImGui::Button(confirmLbl, ImVec2(-1.f, 34.f))) {
+                table_->checkpoint();
+                showToast(table_->resolveDoorSwingsChoice(rng_()));
+            }
+            if (ImGui::Button("Cancel", ImVec2(-1.f, 0.f))) {
+                showToast(table_->cancelOptionalModal());
+            }
+        }
+        ImGui::End();
+    }
+
+    // 11. BAG OF TRICKS (id 31): Move a Mark from one player to another
+    if (st.pendingMoveMarkChoice) {
+        ImGui::SetNextWindowPos(ImVec2(vp.x * 0.5f, vp.y * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(720.f, 0.f), ImGuiCond_Always);
+        if (ImGui::Begin("BAG OF TRICKS: MOVE A MARK BETWEEN PLAYERS###MoveMarkModal", nullptr,
+                         flags)) {
+            ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.62f, 1.f),
+                               "Choose which Mark transfer to perform:");
+            ImGui::Separator();
+            for (int srcP = 0; srcP < st.playerCount; ++srcP) {
+                if (srcP >= static_cast<int>(st.players.size())) break;
+                const PlayerState& sps = st.players[static_cast<size_t>(srcP)];
+                if (!sps.alive || sps.escapedInChoppa || sps.marksCount <= 0) continue;
+                for (int dstP = 0; dstP < st.playerCount; ++dstP) {
+                    if (dstP == srcP || dstP >= static_cast<int>(st.players.size())) continue;
+                    const PlayerState& dps = st.players[static_cast<size_t>(dstP)];
+                    if (!dps.alive || dps.escapedInChoppa) continue;
+                    char mBtn[180];
+                    std::snprintf(mBtn, sizeof mBtn,
+                                  "Move 1 Mark from P%d (%d Marks) -> P%d (%d Marks)", srcP + 1,
+                                  sps.marksCount, dstP + 1, dps.marksCount);
+                    if (ImGui::Button(mBtn, ImVec2(-1.f, 34.f))) {
+                        table_->checkpoint();
+                        showToast(table_->resolveMoveMarkChoice(srcP, dstP));
+                    }
+                }
+            }
+            ImGui::Spacing();
+            if (ImGui::Button("Cancel", ImVec2(-1.f, 0.f))) {
+                showToast(table_->cancelOptionalModal());
             }
         }
         ImGui::End();
@@ -2378,10 +2523,13 @@ void App::openBugReportModal(PileId focusPile, int focusCardDef, const std::stri
         if (!d.subtitle.empty()) subjCard += " (" + d.subtitle + ")";
     }
     if (subjCard.empty() && !table_->state().moveLog.empty()) {
-        const MoveLogEntry& lastMove = table_->state().moveLog.back();
-        subjCard = lastMove.cardSummary + " (" + lastMove.actionType + " #" +
-                   std::to_string(lastMove.seq) + ")";
-        if (subjZone.empty()) subjZone = lastMove.fromZone + " -> " + lastMove.toZone;
+        for (int i = static_cast<int>(table_->state().moveLog.size()) - 1; i >= 0; --i) {
+            const MoveLogEntry& mv = table_->state().moveLog[static_cast<size_t>(i)];
+            if (mv.actionType == "BUG_REPORT") continue;
+            subjCard = mv.cardSummary + " (" + mv.actionType + " #" + std::to_string(mv.seq) + ")";
+            if (subjZone.empty()) subjZone = mv.fromZone + " -> " + mv.toZone;
+            break;
+        }
     }
 
     std::snprintf(bugSubjectCardBuf_, sizeof bugSubjectCardBuf_, "%s", subjCard.c_str());

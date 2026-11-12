@@ -1079,7 +1079,19 @@
                       "group":  "char-danny-predator-2-",
                       "src":  "01_heroes_human/05_danny_predator_2/Danny_2Common.jpg",
                       "land":  false,
-                      "qty":  5
+                      "qty":  5,
+                      "title":  "FIFTEEN YEARS ON THE STREET",
+                      "subtitle":  "DANNY",
+                      "rarity":  "Common",
+                      "cost":  2,
+                      "recruit":  2,
+                      "attack":  0,
+                      "classType":  "Leadership",
+                      "team":  "Harrigan\u0027s Squad",
+                      "keywords":  [
+                                       "Showboat"
+                                   ],
+                      "rulesText":  "Showboat: You get +1 [Recruit]."
                   },
                   {
                       "id":  17,
@@ -1087,7 +1099,19 @@
                       "group":  "char-danny-predator-2-",
                       "src":  "01_heroes_human/05_danny_predator_2/Danny_3Common.jpg",
                       "land":  false,
-                      "qty":  5
+                      "qty":  5,
+                      "title":  "TAKE A GOOD LOOK",
+                      "subtitle":  "DANNY",
+                      "rarity":  "Common",
+                      "cost":  4,
+                      "recruit":  0,
+                      "attack":  1,
+                      "classType":  "Intel",
+                      "team":  "Harrigan\u0027s Squad",
+                      "keywords":  [
+                                       "Coordinate"
+                                   ],
+                      "rulesText":  "Coordinate\nDraw a card."
                   },
                   {
                       "id":  18,
@@ -1095,7 +1119,19 @@
                       "group":  "char-danny-predator-2-",
                       "src":  "01_heroes_human/05_danny_predator_2/Danny_4Uncommon.jpg",
                       "land":  false,
-                      "qty":  3
+                      "qty":  3,
+                      "title":  "OUT FRONT HAVING LUNCH",
+                      "subtitle":  "DANNY",
+                      "rarity":  "Uncommon",
+                      "cost":  5,
+                      "recruit":  0,
+                      "attack":  3,
+                      "classType":  "Survival",
+                      "team":  "Harrigan\u0027s Squad",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "[Survival]: Each player may kill a card in their discard pile."
                   },
                   {
                       "id":  19,
@@ -1103,7 +1139,19 @@
                       "group":  "char-danny-predator-2-",
                       "src":  "01_heroes_human/05_danny_predator_2/Danny_1Rare.jpg",
                       "land":  false,
-                      "qty":  1
+                      "qty":  1,
+                      "title":  "PUT HIM ON THE PAYROLL",
+                      "subtitle":  "DANNY",
+                      "rarity":  "Rare",
+                      "cost":  8,
+                      "recruit":  0,
+                      "attack":  4,
+                      "classType":  "Tech",
+                      "team":  "Harrigan\u0027s Squad",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "Skip the Enemy phase next turn."
                   },
                   {
                       "id":  20,
@@ -1111,7 +1159,19 @@
                       "group":  "char-harrigan-predator-2-",
                       "src":  "01_heroes_human/06_harrigan_predator_2/Harrigan_2Common.jpg",
                       "land":  false,
-                      "qty":  5
+                      "qty":  5,
+                      "title":  "THE SPEECH",
+                      "subtitle":  "HARRIGAN",
+                      "rarity":  "Common",
+                      "cost":  1,
+                      "recruit":  0,
+                      "attack":  1,
+                      "classType":  "Leadership",
+                      "team":  "Harrigan\u0027s Squad",
+                      "keywords":  [
+                                       "Coordinate"
+                                   ],
+                      "rulesText":  "Coordinate"
                   },
                   {
                       "id":  21,
@@ -1119,7 +1179,19 @@
                       "group":  "char-harrigan-predator-2-",
                       "src":  "01_heroes_human/06_harrigan_predator_2/Harrigan_3Common.jpg",
                       "land":  false,
-                      "qty":  5
+                      "qty":  5,
+                      "title":  "NOW IT\u0027S PERSONAL",
+                      "subtitle":  "HARRIGAN",
+                      "rarity":  "Common",
+                      "cost":  4,
+                      "recruit":  0,
+                      "attack":  2,
+                      "classType":  "Tech",
+                      "team":  "Harrigan\u0027s Squad",
+                      "keywords":  [
+                                       "Showboat"
+                                   ],
+                      "rulesText":  "Showboat: You get +1 [Attack]."
                   },
                   {
                       "id":  22,
@@ -1127,7 +1199,19 @@
                       "group":  "char-harrigan-predator-2-",
                       "src":  "01_heroes_human/06_harrigan_predator_2/Harrigan_4Uncommon.jpg",
                       "land":  false,
-                      "qty":  3
+                      "qty":  3,
+                      "title":  "THE DOOR SWINGS BOTH WAYS",
+                      "subtitle":  "HARRIGAN",
+                      "rarity":  "Uncommon",
+                      "cost":  6,
+                      "recruit":  0,
+                      "attack":  2,
+                      "classType":  "Intel",
+                      "team":  "Harrigan\u0027s Squad",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "[Intel]: Discard any number of cards from your hand, then draw that many cards."
                   },
                   {
                       "id":  23,
@@ -1135,7 +1219,19 @@
                       "group":  "char-harrigan-predator-2-",
                       "src":  "01_heroes_human/06_harrigan_predator_2/Harrigan_1Rare.jpg",
                       "land":  false,
-                      "qty":  1
+                      "qty":  1,
+                      "title":  "I\u0027M GONNA FINISH IT",
+                      "subtitle":  "HARRIGAN",
+                      "rarity":  "Rare",
+                      "cost":  8,
+                      "recruit":  0,
+                      "attack":  0,
+                      "classType":  "Survival",
+                      "team":  "Harrigan\u0027s Squad",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "Once this turn, double your [Attack]."
                   },
                   {
                       "id":  24,
@@ -1143,7 +1239,19 @@
                       "group":  "char-keyes-predator-2-",
                       "src":  "01_heroes_human/07_keyes_predator_2/Keyes_2Common.jpg",
                       "land":  false,
-                      "qty":  5
+                      "qty":  5,
+                      "title":  "ENJOY THE SHOW",
+                      "subtitle":  "KEYES",
+                      "rarity":  "Common",
+                      "cost":  3,
+                      "recruit":  2,
+                      "attack":  0,
+                      "classType":  "Intel",
+                      "team":  "Harrigan\u0027s Squad",
+                      "keywords":  [
+                                       "Showboat"
+                                   ],
+                      "rulesText":  "Showboat: Once this turn, you may scan any space."
                   },
                   {
                       "id":  25,
@@ -1151,7 +1259,19 @@
                       "group":  "char-keyes-predator-2-",
                       "src":  "01_heroes_human/07_keyes_predator_2/Keyes_3Common.jpg",
                       "land":  false,
-                      "qty":  5
+                      "qty":  5,
+                      "title":  "TOO LATE TO GO HOME NOW",
+                      "subtitle":  "KEYES",
+                      "rarity":  "Common",
+                      "cost":  3,
+                      "recruit":  0,
+                      "attack":  2,
+                      "classType":  "Survival",
+                      "team":  "Harrigan\u0027s Squad",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "[Harrigan\u0027s Squad]: Once this turn, you may heal the Strike with the least damage among all players. (If there\u0027s a tie you choose. An * counts as 0.)"
                   },
                   {
                       "id":  26,
@@ -1159,7 +1279,19 @@
                       "group":  "char-keyes-predator-2-",
                       "src":  "01_heroes_human/07_keyes_predator_2/Keyes_4Uncommon.jpg",
                       "land":  false,
-                      "qty":  3
+                      "qty":  3,
+                      "title":  "JURISDICTIONAL INTRUSION",
+                      "subtitle":  "KEYES",
+                      "rarity":  "Uncommon",
+                      "cost":  5,
+                      "recruit":  0,
+                      "attack":  3,
+                      "classType":  "Tech",
+                      "team":  "Harrigan\u0027s Squad",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "[Tech]: Draw cards until you draw a Starting card."
                   },
                   {
                       "id":  27,
@@ -1167,7 +1299,19 @@
                       "group":  "char-keyes-predator-2-",
                       "src":  "01_heroes_human/07_keyes_predator_2/Keyes_1Rare.jpg",
                       "land":  false,
-                      "qty":  1
+                      "qty":  1,
+                      "title":  "THIS IS BETWEEN HIM AND ME",
+                      "subtitle":  "KEYES",
+                      "rarity":  "Rare",
+                      "cost":  7,
+                      "recruit":  4,
+                      "attack":  0,
+                      "classType":  "Leadership",
+                      "team":  "Harrigan\u0027s Squad",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "You may also use [Recruit] to scan this turn. (You can\u0027t combine [Attack] and [Recruit].)"
                   },
                   {
                       "id":  28,
@@ -1175,7 +1319,19 @@
                       "group":  "char-lambert-predator-2-",
                       "src":  "01_heroes_human/08_lambert_predator_2/Lambert_2Common.jpg",
                       "land":  false,
-                      "qty":  5
+                      "qty":  5,
+                      "title":  "COWBOY S#!%",
+                      "subtitle":  "LAMBERT",
+                      "rarity":  "Common",
+                      "cost":  3,
+                      "recruit":  2,
+                      "attack":  0,
+                      "classType":  "Tech",
+                      "team":  "Harrigan\u0027s Squad",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "Once this turn, when you would gain a character, you may have another player gain it instead."
                   },
                   {
                       "id":  29,
@@ -1183,7 +1339,19 @@
                       "group":  "char-lambert-predator-2-",
                       "src":  "01_heroes_human/08_lambert_predator_2/Lambert_3Common.jpg",
                       "land":  false,
-                      "qty":  5
+                      "qty":  5,
+                      "title":  "NO AUTOGRAPHS",
+                      "subtitle":  "LAMBERT",
+                      "rarity":  "Common",
+                      "cost":  4,
+                      "recruit":  0,
+                      "attack":  2,
+                      "classType":  "Survival",
+                      "team":  "Harrigan\u0027s Squad",
+                      "keywords":  [
+                                       "Showboat"
+                                   ],
+                      "rulesText":  "Showboat: Once this turn, you may heal a Strike from any player."
                   },
                   {
                       "id":  30,
@@ -1191,7 +1359,19 @@
                       "group":  "char-lambert-predator-2-",
                       "src":  "01_heroes_human/08_lambert_predator_2/Lambert_4Uncommon.jpg",
                       "land":  false,
-                      "qty":  3
+                      "qty":  3,
+                      "title":  "LUCK IS MY SPECIALTY",
+                      "subtitle":  "LAMBERT",
+                      "rarity":  "Uncommon",
+                      "cost":  6,
+                      "recruit":  2,
+                      "attack":  2,
+                      "classType":  "Leadership",
+                      "team":  "Harrigan\u0027s Squad",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "[Leadership]: You may put any number of the cards you gain this turn on top of your deck."
                   },
                   {
                       "id":  31,
@@ -1199,7 +1379,19 @@
                       "group":  "char-lambert-predator-2-",
                       "src":  "01_heroes_human/08_lambert_predator_2/Lambert_1Rare.jpg",
                       "land":  false,
-                      "qty":  1
+                      "qty":  1,
+                      "title":  "BAG OF TRICKS",
+                      "subtitle":  "LAMBERT",
+                      "rarity":  "Rare",
+                      "cost":  7,
+                      "recruit":  4,
+                      "attack":  0,
+                      "classType":  "Intel",
+                      "team":  "Harrigan\u0027s Squad",
+                      "keywords":  [
+
+                                   ],
+                      "rulesText":  "Once this turn, you may move a Mark from one player to another."
                   },
                   {
                       "id":  32,
